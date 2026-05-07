@@ -15,7 +15,8 @@ async def create_doc(user_id: str):
 
 @router.post("/open_doc/{doc_id}/{user_id}")
 async def open_doc(doc_id: str, user_id: str):
-    """Mở một tài liệu (Lấy snapshot)"""
+    """Trả về tài liệu về cho client truy vấn trong db(mongodb) or cache - redis """
+    """ lúc này bên client sẽ thiết lập kết nối socket giữa client và server gọi đến api socket"""
     pass
 
 @router.post("/share_doc/{doc_id}/{user_id}/{role}")
