@@ -1,41 +1,68 @@
-
-# Docker-compose đóng gói các service cho phần backend:
-#  + RabbitMQ
-#  + MongoDB
-#  + Redis
-
 version: '3.8'
 
 services:
   rabbitmq:
     image: rabbitmq:3-management
     container_name: rabbitmq
+    restart: unless-stopped
     ports:
       - "5672:5672"
       - "15672:15672"
     environment:
-      - RABBITMQ_DEFAULT_USER=guest
-      - RABBITMQ_DEFAULT_PASS=guest
+      - RABBITMQ_DEFAULT_USER=nam.dev
+      - RABBITMQ_DEFAULT_PASS=Nam12345@
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - network_infra
+    healthcheck:
+      test: rabbitmq-diagnostics -q ping
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-  # MongoDB
   mongo:
-    image: mongo:4.4
+    image: mongo:7.0
     container_name: mongo
+    restart: unless-stopped
     ports:
       - "27017:27017"
     volumes:
       - mongo_data:/data/db
+    networks:
+      - network_infra
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-  # Redis
   redis:
-    image: redis:6.2
+    image: redis:7.0
     container_name: redis
+    restart: unless-stopped
+    command: redis-server --requirepass Nam12345@
     ports:
       - "6379:6379"
-  
-  # websocket để sau
-  # worker để sau
-  
+    volumes:
+      - redis_data:/data/redis
+    networks:
+      - network_infra
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
+# worker để sau
+# websocket để sau
+  
 volumes:
   mongo_data:
+  rabbitmq_data:
+  redis_data:
+
+networks:
+  network_infra:
+    name: network_infra 
+    driver: bridge
