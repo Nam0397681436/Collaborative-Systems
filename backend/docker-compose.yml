@@ -54,6 +54,36 @@ services:
       timeout: 5s
       retries: 5
 
+  mongo-express:  # đây chỉ là giao diện tương tác mongo
+    image: mongo-express:latest
+    container_name: mongo-express
+    restart: unless-stopped
+    ports:
+      - "8085:8081"
+    environment:
+      - ME_CONFIG_BASICAUTH_USERNAME=admin
+      - ME_CONFIG_BASICAUTH_PASSWORD=admin
+      - ME_CONFIG_MONGODB_URL=mongodb://mongo:27017/
+    networks:
+      - network_infra
+    depends_on:
+      mongo: 
+        condition: service_healthy
+
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: redis-commander
+    restart: unless-stopped
+    environment:
+      - REDIS_HOSTS=local:redis:6379:0:Nam12345@
+    ports:
+      - "8086:8081"
+    networks:
+      - network_infra
+    depends_on:
+      redis:
+        condition: service_healthy
+
 # worker để sau
 # websocket để sau
   
