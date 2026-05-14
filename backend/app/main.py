@@ -48,9 +48,9 @@ async def listen_for_broadcast():
     async with connection:
         channel = await connection.channel()
         exchange=await channel.declare_exchange(
-            name="ot_exchange",
+            name="broadcast_to_room",
             type="fanout",
-            durable=True
+            durable=False
         )
         queue = await channel.declare_queue(exclusive=True)
         await queue.bind(exchange)
@@ -69,3 +69,6 @@ async def listen_for_broadcast():
 async def startup_event(background_tasks: BackgroundTasks):
     # Chạy hàm lắng nghe như một task nền
     background_tasks.add_task(listen_for_broadcast)
+
+    
+

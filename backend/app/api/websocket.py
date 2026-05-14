@@ -1,7 +1,7 @@
 import json
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from model.connection_socket import ConnectionManager
-from model.rabbit_mq import RabbitMQProducer, get_routing_key
+from infra.rabbitmq import RabbitMQProducer, get_routing_key
 import logging
 logger=logging.getLogger("app.websocket")
 
