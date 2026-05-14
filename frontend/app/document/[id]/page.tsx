@@ -1,7 +1,21 @@
 "use client"
 
-import { useState, use } from "react"
+import { useState, useEffect, useCallback, use, useRef } from "react"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
+import { useAuth } from "@/lib/auth-context"
+import { getApiBaseUrl } from "@/lib/api/client"
+import {
+  getDocumentApi,
+  updateDocumentTitleApi,
+  deleteDocumentApi,
+  addCollaboratorApi,
+  removeCollaboratorApi,
+  updateCollaboratorRoleApi,
+  type DocumentItem,
+  type Collaborator,
+  type DocumentRole,
+} from "@/lib/api/documents"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -13,20 +27,8 @@ import {
 } from "@/components/ui/dropdown-menu"
 import {
   Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
-import { Label } from "@/components/ui/label"
 import {
   FileText,
   ArrowLeft,
@@ -35,7 +37,6 @@ import {
   Star,
   Download,
   History,
-  Users,
   ChevronDown,
   Bold,
   Italic,
@@ -49,63 +50,286 @@ import {
   Image,
   Undo,
   Redo,
-  X,
-  Crown,
-  Pencil,
-  Eye,
-  UserPlus,
-  Check,
-  Copy,
   Clock,
-  MessageCircle,
+  Loader2,
 } from "lucide-react"
 import { CollaboratorsSidebar } from "@/components/collaborators-sidebar"
+import ShareDialog from "@/components/share-dialog"
+import DocumentContentEditor from "@/components/document-content-editor"
+import { toast } from "sonner"
 
-// Mock data for online users
-const onlineUsers = [
-  { id: "1", name: "Nguyễn Văn", email: "nguyen@example.com", color: "#10b981", isOnline: true, role: "owner" as const, cursorPosition: { x: 120, y: 180 } },
-  { id: "2", name: "Trần Thị B", email: "tran@example.com", color: "#3b82f6", isOnline: true, role: "editor" as const, cursorPosition: { x: 300, y: 250 } },
-  { id: "3", name: "Lê Minh C", email: "le@example.com", color: "#f59e0b", isOnline: true, role: "editor" as const, cursorPosition: { x: 450, y: 320 } },
-  { id: "4", name: "Phạm Hà D", email: "pham@example.com", color: "#8b5cf6", isOnline: false, role: "viewer" as const },
-]
 
-// Mock document content
-const initialContent = `# Báo cáo dự án Q1 2024
 
-## Tổng quan
+function toSidebarUser(c: Collaborator, color: string, idx: number, isOnline: boolean) {
+  return {
+    id: c._id,
+    name: c.username ?? c.email ?? "Unknown",
+    email: c.email ?? "",
+    color: color,
+    isOnline,
+    role: c.role as "owner" | "editor" | "viewer" | "commenter",
+  }
+}
 
-Đây là báo cáo tổng hợp về tiến độ dự án trong quý 1 năm 2024. Chúng ta đã đạt được nhiều mục tiêu quan trọng và cũng gặp phải một số thách thức cần giải quyết.
-
-### Các thành tựu chính
-
-1. **Hoàn thành giai đoạn thiết kế** - Đội ngũ đã hoàn thành việc thiết kế giao diện người dùng cho tất cả các module chính.
-
-2. **Tích hợp API** - Đã tích hợp thành công 80% các API cần thiết với hệ thống backend.
-
-3. **Kiểm thử ban đầu** - Hoàn thành kiểm thử đơn vị cho các component quan trọng.
-
-### Các thách thức
-
-- Cần tối ưu hiệu suất cho module xử lý dữ liệu lớn
-- Đồng bộ hóa real-time cần được cải thiện
-- Cần thêm nguồn lực cho việc kiểm thử
-
-## Kế hoạch Q2 2024
-
-Trong quý tiếp theo, chúng ta sẽ tập trung vào:
-
-- Hoàn thiện tích hợp API còn lại
-- Tối ưu hiệu suất hệ thống
-- Triển khai kiểm thử toàn diện
-- Chuẩn bị cho giai đoạn beta testing`
+// ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function DocumentEditorPage({ params }: { params: Promise<{ id: string }> }) {
-  const resolvedParams = use(params)
-  const [title, setTitle] = useState("Báo cáo dự án Q1 2024")
-  const [content, setContent] = useState(initialContent)
-  const [isStarred, setIsStarred] = useState(true)
+  const { id } = use(params)
+  const router = useRouter()
+  const { user } = useAuth()
+
+  const [document, setDocument] = useState<DocumentItem | null>(null)
+  const [title, setTitle] = useState("")
+  const [isLoading, setIsLoading] = useState(true)
+  const [isStarred, setIsStarred] = useState(false)
   const [showSidebar, setShowSidebar] = useState(true)
   const [isShareDialogOpen, setIsShareDialogOpen] = useState(false)
+  const [lastSaved, setLastSaved] = useState<Date | null>(null)
+  const [onlineUsers, setOnlineUsers] = useState<any[]>([])
+  const [userRole, setUserRole] = useState<string | null>(null)
+
+  const titleDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const socketRef = useRef<WebSocket | null>(null)
+
+  // ── Fetch document ────────────────────────────────────────────────────────
+  const fetchDocument = useCallback(async () => {
+    if (!user?.id) return
+    setIsLoading(true)
+    try {
+      const res = await getDocumentApi(id, user.id)
+      if (res.success && res.document) {
+        setDocument(res.document)
+        setTitle(res.document.title ?? "")
+      }
+    } catch (err) {
+      toast.error("Không tìm thấy tài liệu hoặc bạn không có quyền truy cập")
+      router.push("/dashboard")
+      console.error("Lỗi tải tài liệu:", err)
+    } finally {
+      setIsLoading(false)
+    }
+  }, [id, router, user?.id])
+
+  useEffect(() => {
+    if (user?.id) {
+      fetchDocument()
+    }
+  }, [fetchDocument, user?.id])
+
+  useEffect(() => {
+    if (document && user) {
+      const collab = document.collaborators?.find(c => c._id === user.id)
+      setUserRole(collab ? collab.role : null)
+    }
+  }, [document, user])
+
+  useEffect(() => {
+    if (!document?._id || !user) return
+
+    const currentUserRole =
+      document.collaborators?.find((collaborator) => collaborator._id === user.id)?.role ??
+      "viewer"
+
+    const apiBaseUrl = getApiBaseUrl().replace(/\/?api\/?$/, "")
+    const wsBaseUrl = apiBaseUrl.replace(/^http:/, "ws:").replace(/^https:/, "wss:")
+    const socket = new WebSocket(
+      `${wsBaseUrl}/ws/${encodeURIComponent(id)}/${encodeURIComponent(user.id)}`
+    )
+
+    socketRef.current = socket
+
+    socket.onopen = () => {
+      socket.send(JSON.stringify({
+        type: "JOIN",
+        user: {
+          id: user.id,
+          username: user.username,
+          email: user.email,
+          role: currentUserRole,
+        }
+      }))
+      setOnlineUsers((current) =>
+        current.some((u) => u.id === user.id) ? current : [...current, { ...user, isOnline: true }]
+      )
+    }
+
+    socket.onmessage = (event) => {
+      try {
+        const message = JSON.parse(event.data as string) as {
+          type?: string
+          user_id?: string
+          online_users?: any[]
+          new_role?: string
+        }
+
+        console.log("WebSocket message received:", message)
+
+        if (!message.type) return
+
+        if (message.type === "ERROR") {
+          // Server rejected join or other error
+          const msg = (message as any).message || "Unauthorized"
+          alert(msg)
+          try {
+            socket.close()
+          } catch { }
+          router.push("/dashboard")
+          return
+        }
+
+
+        if (message.type === "JOIN") {
+          if (message.user_id) {
+            setOnlineUsers(message.online_users || [])
+          }
+        }
+
+        if (message.type === "ROLE_UPDATE") {
+          if (message.user_id && message.new_role) {
+            setDocument((prev: any) => {
+              if (!prev) return prev
+              const updatedCollabs = prev.collaborators?.map((c: any) =>
+                c._id === message.user_id ? { ...c, role: message.new_role } : c
+              )
+              return { ...prev, collaborators: updatedCollabs }
+            })
+            if (message.user_id === user.id) {
+              setUserRole(message.new_role)
+              toast.info(`Vai trò của bạn đã được cập nhật thành ${message.new_role}`)
+            }
+          }
+        }
+
+        if (message.type === "COLLABORATOR_REMOVED") {
+          setDocument((prev: any) => {
+            if (!prev) return prev
+            const updatedCollabs = prev.collaborators?.filter((c: any) => c._id !== message.user_id)
+            return { ...prev, collaborators: updatedCollabs }
+          })
+          if (message.user_id === user.id) {
+            toast.error("Bạn đã bị xóa khỏi tài liệu này")
+            try {
+              socket.close()
+            } catch { }
+            router.push("/dashboard")
+          }
+          return
+        }
+
+        if (message.type === "LEAVE") {
+          setOnlineUsers((current) => current.filter((u) => u.id !== message.user_id))
+        }
+      } catch (err) {
+        console.error("Lỗi parse websocket message:", err)
+      }
+    }
+
+    socket.onerror = (err) => {
+      console.error("WebSocket error:", err)
+    }
+
+    socket.onclose = () => {
+      socketRef.current = null
+    }
+
+    return () => {
+      try {
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({ type: "LEAVE" }))
+        }
+      } catch {
+        // ignore close-time send failures
+      }
+
+      socket.close()
+      socketRef.current = null
+    }
+  }, [document?._id, user?.id, id, router])
+
+  // ── Auto-save title (debounce 800ms) ─────────────────────────────────────
+  const handleTitleChange = (newTitle: string) => {
+    setTitle(newTitle)
+    if (titleDebounceRef.current) clearTimeout(titleDebounceRef.current)
+    titleDebounceRef.current = setTimeout(async () => {
+      try {
+        await updateDocumentTitleApi(id, newTitle)
+        setLastSaved(new Date())
+      } catch (err) {
+        console.error("Lỗi lưu tiêu đề:", err)
+      }
+    }, 800)
+  }
+
+  // ── Xóa tài liệu ─────────────────────────────────────────────────────────
+  const handleDelete = async () => {
+    if (!window.confirm("Bạn có chắc muốn xóa tài liệu này?")) return
+    try {
+      await deleteDocumentApi(id)
+      router.push("/dashboard")
+    } catch (err) {
+      console.error("Lỗi xóa tài liệu:", err)
+    }
+  }
+
+  // ── Cập nhật collaborators sau thao tác chia sẻ ──────────────────────────
+  const handleCollaboratorsChange = (updated: Collaborator[]) => {
+    setDocument((prev) => prev ? { ...prev, collaborators: updated } : prev)
+  }
+
+  const isOwner = Boolean(user && document && user.id === document.ownerId)
+
+  const handleSidebarRoleChange = async (targetUserId: string, role: "editor" | "viewer" | "remove") => {
+    if (!user) return
+    try {
+      if (role === "remove") {
+        const res = await removeCollaboratorApi(id, targetUserId, user.id)
+        if (res.success && res.document) {
+          handleCollaboratorsChange(res.document.collaborators ?? [])
+        }
+        return
+      }
+
+      const res = await updateCollaboratorRoleApi(id, targetUserId, role as DocumentRole, user.id)
+      if (res.success && res.document) {
+        handleCollaboratorsChange(res.document.collaborators ?? [])
+      }
+    } catch (err) {
+      console.error("Lỗi cập nhật quyền cộng tác viên:", err)
+    }
+  }
+
+
+  // ── Loading ───────────────────────────────────────────────────────────────
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
+      </div>
+    )
+  }
+
+  if (!document) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <div className="text-center">
+          <FileText className="w-16 h-16 text-muted-foreground mx-auto mb-4" />
+          <h2 className="text-lg font-medium">Không tìm thấy tài liệu</h2>
+          <Button className="mt-4" asChild>
+            <Link href="/dashboard">Về trang chủ</Link>
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
+  const collaborators = document.collaborators ?? []
+  const sidebarUsers = collaborators.map((collaborator, index) =>
+    toSidebarUser(collaborator, onlineUsers.find((u) => u.id === collaborator._id)?.color || "", index, onlineUsers.some((u) => u.id === collaborator._id))
+  )
+
+  const savedLabel = lastSaved
+    ? `Đã lưu ${lastSaved.toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}`
+    : "Đang lưu..."
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -125,13 +349,13 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
               <div className="flex flex-col">
                 <Input
                   value={title}
-                  onChange={(e) => setTitle(e.target.value)}
+                  onChange={(e) => handleTitleChange(e.target.value)}
                   className="h-7 px-2 text-base font-medium bg-transparent border-transparent hover:border-border focus:border-primary w-auto min-w-[200px]"
                 />
                 <div className="flex items-center gap-2 text-xs text-muted-foreground px-2">
                   <span className="flex items-center gap-1">
                     <Clock className="w-3 h-3" />
-                    Đã lưu 2 phút trước
+                    {savedLabel}
                   </span>
                 </div>
               </div>
@@ -141,19 +365,19 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
           <div className="flex items-center gap-2">
             {/* Online Users Avatars */}
             <div className="flex items-center -space-x-2 mr-2">
-              {onlineUsers.filter(u => u.isOnline).slice(0, 3).map((user) => (
+              {onlineUsers.slice(0, 3).map((u, i) => (
                 <div
-                  key={user.id}
+                  key={u.id}
                   className="w-8 h-8 rounded-full border-2 border-background flex items-center justify-center text-xs font-medium text-white"
-                  style={{ backgroundColor: user.color }}
-                  title={user.name}
+                  style={{ backgroundColor: u.color }}
+                  title={u.username}
                 >
-                  {user.name.split(" ").map(n => n[0]).join("")}
+                  {u.username.split(" ").map((n: string) => n[0]).join("").slice(0, 2)}
                 </div>
               ))}
-              {onlineUsers.filter(u => u.isOnline).length > 3 && (
+              {onlineUsers.length > 3 && (
                 <div className="w-8 h-8 rounded-full border-2 border-background bg-muted flex items-center justify-center text-xs font-medium text-muted-foreground">
-                  +{onlineUsers.filter(u => u.isOnline).length - 3}
+                  +{onlineUsers.length - 3}
                 </div>
               )}
             </div>
@@ -174,17 +398,17 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
                   <span className="hidden sm:inline">Chia sẻ</span>
                 </Button>
               </DialogTrigger>
-              <ShareDialog onClose={() => setIsShareDialogOpen(false)} />
+              <ShareDialog
+                socket={socketRef.current}
+                docId={id}
+                collaborators={collaborators}
+                onCollaboratorsChange={handleCollaboratorsChange}
+                onClose={() => setIsShareDialogOpen(false)}
+                isOwner={isOwner}
+                currentUserId={user?.id}
+              />
             </Dialog>
 
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => setShowSidebar(!showSidebar)}
-              className={showSidebar ? "bg-secondary" : ""}
-            >
-              <Users className="w-5 h-5" />
-            </Button>
 
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -202,7 +426,7 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
                   Tải xuống
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem className="text-destructive">
+                <DropdownMenuItem className="text-destructive focus:text-destructive cursor-pointer" onClick={handleDelete}>
                   Xóa tài liệu
                 </DropdownMenuItem>
               </DropdownMenuContent>
@@ -212,12 +436,8 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
 
         {/* Toolbar */}
         <div className="flex items-center gap-1 px-4 py-2 border-t border-border overflow-x-auto">
-          <Button variant="ghost" size="icon" className="h-8 w-8">
-            <Undo className="w-4 h-4" />
-          </Button>
-          <Button variant="ghost" size="icon" className="h-8 w-8">
-            <Redo className="w-4 h-4" />
-          </Button>
+          <Button variant="ghost" size="icon" className="h-8 w-8"><Undo className="w-4 h-4" /></Button>
+          <Button variant="ghost" size="icon" className="h-8 w-8"><Redo className="w-4 h-4" /></Button>
           <div className="w-px h-6 bg-border mx-1" />
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -234,236 +454,30 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
             </DropdownMenuContent>
           </DropdownMenu>
           <div className="w-px h-6 bg-border mx-1" />
-          <Button variant="ghost" size="icon" className="h-8 w-8">
-            <Bold className="w-4 h-4" />
-          </Button>
-          <Button variant="ghost" size="icon" className="h-8 w-8">
-            <Italic className="w-4 h-4" />
-          </Button>
-          <Button variant="ghost" size="icon" className="h-8 w-8">
-            <Underline className="w-4 h-4" />
-          </Button>
+          <Button variant="ghost" size="icon" className="h-8 w-8"><Bold className="w-4 h-4" /></Button>
+          <Button variant="ghost" size="icon" className="h-8 w-8"><Italic className="w-4 h-4" /></Button>
+          <Button variant="ghost" size="icon" className="h-8 w-8"><Underline className="w-4 h-4" /></Button>
           <div className="w-px h-6 bg-border mx-1" />
-          <Button variant="ghost" size="icon" className="h-8 w-8">
-            <List className="w-4 h-4" />
-          </Button>
-          <Button variant="ghost" size="icon" className="h-8 w-8">
-            <ListOrdered className="w-4 h-4" />
-          </Button>
+          <Button variant="ghost" size="icon" className="h-8 w-8"><List className="w-4 h-4" /></Button>
+          <Button variant="ghost" size="icon" className="h-8 w-8"><ListOrdered className="w-4 h-4" /></Button>
           <div className="w-px h-6 bg-border mx-1" />
-          <Button variant="ghost" size="icon" className="h-8 w-8">
-            <AlignLeft className="w-4 h-4" />
-          </Button>
-          <Button variant="ghost" size="icon" className="h-8 w-8">
-            <AlignCenter className="w-4 h-4" />
-          </Button>
-          <Button variant="ghost" size="icon" className="h-8 w-8">
-            <AlignRight className="w-4 h-4" />
-          </Button>
+          <Button variant="ghost" size="icon" className="h-8 w-8"><AlignLeft className="w-4 h-4" /></Button>
+          <Button variant="ghost" size="icon" className="h-8 w-8"><AlignCenter className="w-4 h-4" /></Button>
+          <Button variant="ghost" size="icon" className="h-8 w-8"><AlignRight className="w-4 h-4" /></Button>
           <div className="w-px h-6 bg-border mx-1" />
-          <Button variant="ghost" size="icon" className="h-8 w-8">
-            <Link2 className="w-4 h-4" />
-          </Button>
-          <Button variant="ghost" size="icon" className="h-8 w-8">
-            <Image className="w-4 h-4" />
-          </Button>
+          <Button variant="ghost" size="icon" className="h-8 w-8"><Link2 className="w-4 h-4" /></Button>
+          <Button variant="ghost" size="icon" className="h-8 w-8"><Image className="w-4 h-4" /></Button>
         </div>
       </header>
 
       {/* Main Content */}
-      <div className="flex-1 flex">
+      <div className="">
         {/* Editor */}
-        <main className="flex-1 overflow-auto">
-          <div className="max-w-4xl mx-auto py-8 px-4 md:px-8">
-            {/* Simulated Cursors */}
-            <div className="relative">
-              {onlineUsers.filter(u => u.isOnline && u.cursorPosition && u.id !== "1").map((user) => (
-                <div
-                  key={user.id}
-                  className="absolute pointer-events-none z-10"
-                  style={{
-                    left: user.cursorPosition?.x,
-                    top: user.cursorPosition?.y,
-                  }}
-                >
-                  <div
-                    className="w-0.5 h-5 rounded-full"
-                    style={{ backgroundColor: user.color }}
-                  />
-                  <div
-                    className="text-xs px-1.5 py-0.5 rounded text-white whitespace-nowrap -mt-0.5"
-                    style={{ backgroundColor: user.color }}
-                  >
-                    {user.name.split(" ")[0]}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* Editor Content */}
-            <textarea
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              className="w-full min-h-[calc(100vh-200px)] bg-transparent text-foreground resize-none focus:outline-none font-mono text-sm leading-relaxed"
-              placeholder="Bắt đầu viết..."
-            />
-          </div>
-        </main>
-
-        {/* Collaborators Sidebar */}
-        {showSidebar && (
-          <CollaboratorsSidebar
-            users={onlineUsers}
-            onClose={() => setShowSidebar(false)}
-            onOpenShare={() => setIsShareDialogOpen(true)}
-          />
-        )}
+        <div className={`${showSidebar ? "w-[calc(100vw-20rem)]" : "w-full"} overflow-auto p-2`}>
+          <DocumentContentEditor editable={userRole ? userRole !== "viewer" : false} />
+        </div>
       </div>
     </div>
   )
 }
 
-function ShareDialog({ onClose }: { onClose: () => void }) {
-  const [email, setEmail] = useState("")
-  const [role, setRole] = useState("editor")
-  const [copied, setCopied] = useState(false)
-
-  const collaborators = [
-    { id: "1", name: "Nguyễn Văn", email: "nguyen@example.com", role: "owner" },
-    { id: "2", name: "Trần Thị B", email: "tran@example.com", role: "editor" },
-    { id: "3", name: "Lê Minh C", email: "le@example.com", role: "editor" },
-    { id: "4", name: "Phạm Hà D", email: "pham@example.com", role: "viewer" },
-  ]
-
-  const handleCopyLink = () => {
-    navigator.clipboard.writeText(window.location.href)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
-  }
-
-  const handleAddCollaborator = () => {
-    if (email) {
-      // Add collaborator logic here
-      setEmail("")
-    }
-  }
-
-  return (
-    <DialogContent className="sm:max-w-lg">
-      <DialogHeader>
-        <DialogTitle>Chia sẻ tài liệu</DialogTitle>
-        <DialogDescription>
-          Mời người khác cộng tác trên tài liệu này
-        </DialogDescription>
-      </DialogHeader>
-
-      <div className="space-y-6 py-4">
-        {/* Add People */}
-        <div className="space-y-3">
-          <Label>Thêm người</Label>
-          <div className="flex gap-2">
-            <Input
-              placeholder="Nhập email..."
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="flex-1"
-            />
-            <Select value={role} onValueChange={setRole}>
-              <SelectTrigger className="w-[120px]">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="editor">
-                  <div className="flex items-center gap-2">
-                    <Pencil className="w-3 h-3" />
-                    Editor
-                  </div>
-                </SelectItem>
-                <SelectItem value="viewer">
-                  <div className="flex items-center gap-2">
-                    <Eye className="w-3 h-3" />
-                    Viewer
-                  </div>
-                </SelectItem>
-                <SelectItem value="commenter">
-                  <div className="flex items-center gap-2">
-                    <MessageCircle className="w-3 h-3" />
-                    Commenter
-                  </div>
-                </SelectItem>
-              </SelectContent>
-            </Select>
-            <Button onClick={handleAddCollaborator}>
-              <UserPlus className="w-4 h-4" />
-            </Button>
-          </div>
-        </div>
-
-        {/* Current Collaborators */}
-        <div className="space-y-3">
-          <Label>Người có quyền truy cập</Label>
-          <div className="space-y-2 max-h-[200px] overflow-y-auto">
-            {collaborators.map((collab) => (
-              <div
-                key={collab.id}
-                className="flex items-center justify-between p-3 rounded-lg bg-secondary"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-full bg-primary flex items-center justify-center text-sm font-medium text-primary-foreground">
-                    {collab.name.split(" ").map(n => n[0]).join("")}
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium text-foreground text-sm">{collab.name}</span>
-                      {collab.role === "owner" && (
-                        <Crown className="w-3 h-3 text-owner" />
-                      )}
-                    </div>
-                    <span className="text-xs text-muted-foreground">{collab.email}</span>
-                  </div>
-                </div>
-                {collab.role === "owner" ? (
-                  <span className="text-xs text-muted-foreground px-2 py-1 bg-muted rounded">
-                    Chủ sở hữu
-                  </span>
-                ) : (
-                  <Select defaultValue={collab.role}>
-                    <SelectTrigger className="w-[100px] h-8 text-xs">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="editor">Editor</SelectItem>
-                      <SelectItem value="viewer">Viewer</SelectItem>
-                      <SelectItem value="remove" className="text-destructive">
-                        Xóa
-                      </SelectItem>
-                    </SelectContent>
-                  </Select>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Copy Link */}
-        <div className="space-y-3">
-          <Label>Hoặc sao chép liên kết</Label>
-          <div className="flex gap-2">
-            <Input
-              readOnly
-              value={typeof window !== "undefined" ? window.location.href : ""}
-              className="flex-1 text-sm"
-            />
-            <Button variant="outline" onClick={handleCopyLink}>
-              {copied ? (
-                <Check className="w-4 h-4 text-primary" />
-              ) : (
-                <Copy className="w-4 h-4" />
-              )}
-            </Button>
-          </div>
-        </div>
-      </div>
-    </DialogContent>
-  )
-}

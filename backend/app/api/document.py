@@ -1,9 +1,9 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from datetime import datetime
 from model.enum_user_role import UserRole
 from app.api.database import get_db, close_db
 from bson import ObjectId
-
+from model.connection_socket import connection_manager
 
 router = APIRouter()
 
@@ -22,73 +22,58 @@ async def get_docs(dataReq: dict):
     if not user_owner:
         return {"success": False, "message": "Không tìm thấy người sở hữu"}
 
-    user_owner_name=user_owner["name"]
+    user_owner_name=user_owner["username"] if "username" in user_owner else user_owner.get("name", "Unknown User")
 
     new_document = {
         "title": title,
         "ownerId": ownerId,
-        "collaborators": [{"user_id":ownerId,"role":"owner","username":user_owner_name}],
+        "collaborators": [{"user_id":ownerId,"role":"owner"}],
         "content_snapshot": "",
         "created_at": datetime.now(),
         "updated_at": datetime.now()
     }
     new_doc = await db.documents.insert_one(new_document)
-    
-    return {"success": True,
-            "document": 
-                {"_id": str(new_doc.inserted_id),
-                "title": title,
-                "ownerId": ownerId,
-                "vectorClock":{
-                    ownerId: 0
-                },
-                "collaborators": [{"user_id":ownerId,"role":"owner"}]
-                }
-            }
 
-
-@router.get("/documents/{docId}")
-async def get_doc(docId: str):
-    """Lấy tài liệu của người dùng và populate thông tin ownerId, collaborators"""
-    db = get_db()
-    
-    if not ObjectId.is_valid(docId):
-        return {"success": False, "message": "ID tài liệu không hợp lệ"}
-
+    # Use aggregation pipeline to populate collaborators with user details
     pipeline = [
-        {"$match": {"_id": ObjectId(docId)}},
+        {"$match": {"_id": new_doc.inserted_id}},
+        {"$unwind": {"path": "$collaborators", "preserveNullAndEmptyArrays": True}},
         {
             "$lookup": {
                 "from": "users",
-                "let": {"owner_id_str": "$ownerId"},
+                "let": {"user_id": "$collaborators.user_id"},
                 "pipeline": [
-                    {"$match": {"$expr": {"$eq": [{"$toString": "$_id"}, "$$owner_id_str"]}}},
+                    {"$match": {"$expr": {"$eq": [{"$toString": "$_id"}, "$$user_id"]}}},
                     {"$project": {"_id": {"$toString": "$_id"}, "username": 1, "email": 1}}
                 ],
-                "as": "ownerId"
+                "as": "user_info"
             }
         },
-        {"$unwind": {"path": "$ownerId", "preserveNullAndEmptyArrays": True}},
+        {"$unwind": {"path": "$user_info", "preserveNullAndEmptyArrays": True}},
         {
-            "$lookup": {
-                "from": "users",
-                "let": {"collab_user_ids": "$collaborators.user_id"},
-                "pipeline": [
-                    {"$match": {"$expr": {"$in": [{"$toString": "$_id"}, {"$ifNull": ["$$collab_user_ids", []]}]}}},
-                    {"$project": {"_id": {"$toString": "$_id"}, "username": 1, "email": 1}}
-                ],
-                "as": "populated_collaborators"
+            "$addFields": {
+                "collaborators": {
+                    "_id": "$user_info._id",
+                    "username": "$user_info.username",
+                    "email": "$user_info.email",
+                    "role": "$collaborators.role"
+                }
+            }
+        },
+        {
+            "$group": {
+                "_id": "$_id",
+                "title": {"$first": "$title"},
+                "ownerId": {"$first": "$ownerId"},
+                "content_snapshot": {"$first": "$content_snapshot"},
+                "created_at": {"$first": "$created_at"},
+                "updated_at": {"$first": "$updated_at"},
+                "collaborators": {"$push": "$collaborators"}
             }
         },
         {
             "$addFields": {
-                "_id": {"$toString": "$_id"},
-                "collaborators": "$populated_collaborators"
-            }
-        },
-        {
-            "$project": {
-                "populated_collaborators": 0
+                "_id": {"$toString": "$_id"}
             }
         }
     ]
@@ -96,7 +81,77 @@ async def get_doc(docId: str):
     docs = await db.documents.aggregate(pipeline).to_list(length=1)
     
     if not docs:
-        return {"success": False, "message": "Không tìm thấy tài liệu"}
+        return {"success": False, "message": "Không thể tạo tài liệu"}
+    
+    return {"success": True, "document": docs[0]}
+
+@router.get("/documents/{docId}")
+async def get_doc(docId: str, requesterId: str | None = Query(default=None)):
+    """Lấy tài liệu của người dùng và populate thông tin ownerId, collaborators"""
+    db = get_db()
+    
+    if not ObjectId.is_valid(docId):
+        raise HTTPException(status_code=400, detail="ID tài liệu không hợp lệ")
+
+    doc = await db.documents.find_one({"_id": ObjectId(docId)})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu")
+
+    if not requesterId:
+        raise HTTPException(status_code=403, detail="Không có quyền truy cập tài liệu này")
+
+    is_owner = str(doc.get("ownerId")) == str(requesterId)
+    is_collaborator = any(str(collab.get("user_id")) == str(requesterId) for collab in doc.get("collaborators", []))
+    if not is_owner and not is_collaborator:
+        raise HTTPException(status_code=403, detail="Không có quyền truy cập tài liệu này")
+
+    pipeline = [
+        {"$match": {"_id": ObjectId(docId)}},
+        {"$unwind": {"path": "$collaborators", "preserveNullAndEmptyArrays": True}},
+        {
+            "$lookup": {
+                "from": "users",
+                "let": {"user_id": "$collaborators.user_id"},
+                "pipeline": [
+                    {"$match": {"$expr": {"$eq": [{"$toString": "$_id"}, "$$user_id"]}}},
+                    {"$project": {"_id": {"$toString": "$_id"}, "username": 1, "email": 1}}
+                ],
+                "as": "user_info"
+            }
+        },
+        {"$unwind": {"path": "$user_info", "preserveNullAndEmptyArrays": True}},
+        {
+            "$addFields": {
+                "collaborators": {
+                    "_id": "$user_info._id",
+                    "username": "$user_info.username",
+                    "email": "$user_info.email",
+                    "role": "$collaborators.role"
+                }
+            }
+        },
+        {
+            "$group": {
+                "_id": "$_id",
+                "title": {"$first": "$title"},
+                "ownerId": {"$first": "$ownerId"},
+                "content_snapshot": {"$first": "$content_snapshot"},
+                "created_at": {"$first": "$created_at"},
+                "updated_at": {"$first": "$updated_at"},
+                "collaborators": {"$push": "$collaborators"}
+            }
+        },
+        {
+            "$addFields": {
+                "_id": {"$toString": "$_id"}
+            }
+        }
+    ]
+
+    docs = await db.documents.aggregate(pipeline).to_list(length=1)
+    
+    if not docs:
+        raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu")
         
     return {"success": True, "document": docs[0]}
 
@@ -179,6 +234,13 @@ async def add_collaborator(docId: str, dataReq: dict):
         return {"success": False, "message": "Email không được để trống"}
         
     db = get_db()
+    # Enforce only owner can add collaborators
+    requester_id = dataReq.get("requesterId")
+    doc = await db.documents.find_one({"_id": ObjectId(docId)})
+    if not doc:
+        return {"success": False, "message": "Không tìm thấy tài liệu để cập nhật"}
+    if not requester_id or str(doc.get("ownerId")) != str(requester_id):
+        return {"success": False, "message": "Chỉ chủ sở hữu mới có thể thêm cộng tác viên"}
     user = await db.users.find_one({"email": email})
     if user is None:
         return {"success": False, "message": "Email không tồn tại"}
@@ -217,9 +279,14 @@ async def add_collaborator(docId: str, dataReq: dict):
     } 
 
 @router.delete("/documents/{docId}/collaborators/{collaboratorId}")
-async def remove_collaborator(docId: str, collaboratorId: str):
+async def remove_collaborator(docId: str, collaboratorId: str, requesterId: str | None = None):
     db = get_db()
-    
+    doc = await db.documents.find_one({"_id": ObjectId(docId)})
+    if not doc:
+        return {"success": False, "message": "Không tìm thấy tài liệu"}
+    if not requesterId or str(doc.get("ownerId")) != str(requesterId):
+        return {"success": False, "message": "Chỉ chủ sở hữu mới có thể xóa cộng tác viên"}
+
     result = await db.documents.update_one(
         {"_id": ObjectId(docId)},
         {"$pull": {"collaborators": {"user_id": collaboratorId}}}
@@ -249,17 +316,35 @@ async def remove_collaborator(docId: str, collaboratorId: str):
                 })
     
     updated_doc["collaborators"] = populated_collaborators
+
+    try:
+        await connection_manager.broadcast_to_room(
+            docId,
+            {
+                "type": "COLLABORATOR_REMOVED",
+                "user_id": collaboratorId,
+            },
+        )
+    except Exception as e:
+        print.error(f"Lỗi khi broadcast xóa cộng tác viên cho document {docId}: {e}")
     
     return {"success": True, "document": updated_doc}   
 
 @router.put("/documents/{docId}/collaborators/{collaboratorId}/role")
 async def update_collaborator_role(docId: str, collaboratorId: str, dataReq: dict):
     role = dataReq.get("role")
+    requester_id = dataReq.get("requesterId")
     if role not in ["viewer", "editor"]:
         return {"success": False, "message": "Vai trò không hợp lệ"}
         
     db = get_db()
-    
+    # enforce only owner can change roles
+    doc = await db.documents.find_one({"_id": ObjectId(docId)})
+    if not doc:
+        return {"success": False, "message": "Không tìm thấy tài liệu"}
+    if not requester_id or str(doc.get("ownerId")) != str(requester_id):
+        return {"success": False, "message": "Chỉ chủ sở hữu mới có thể thay đổi vai trò"}
+
     result = await db.documents.update_one(
         {"_id": ObjectId(docId), "collaborators.user_id": collaboratorId},
         {"$set": {"collaborators.$.role": role}}
@@ -286,6 +371,18 @@ async def update_collaborator_role(docId: str, collaboratorId: str, dataReq: dic
                 })
     
     updated_doc["collaborators"] = populated_collaborators
+
+    try:
+        await connection_manager.broadcast_to_room(
+            docId,
+            {
+                "type": "ROLE_UPDATE",
+                "user_id": collaboratorId,
+                "new_role": role,
+            },
+        )
+    except Exception as e:
+        print.error(f"Lỗi khi broadcast cập nhật role cho document {docId}: {e}")
     
     return {
         "success": True,

@@ -8,7 +8,7 @@ router = APIRouter()
 async def register_account(dataReq: dict):
     """Đăng ký tài khoản mới"""
     db = get_db()
-
+    print("Received registration data:", dataReq)  # Debug log
     username = dataReq.get("username", None)
     password = dataReq.get("password", None)
     email = dataReq.get("email", None)
@@ -17,8 +17,9 @@ async def register_account(dataReq: dict):
         return {"success": False, "message": "Missing username, password, or email"}
 
     existing_user = await db.users.find_one({"email": email})
+    print("Existing user check result:", existing_user)  # Debug log
     if existing_user:
-        raise HTTPException(status_code=400, detail="Email đã tồn tại")
+        return {"success": False, "message": "Email đã tồn tại"}
 
     # 2. Lưu trực tiếp vào MongoDB
     new_user = {
@@ -57,10 +58,10 @@ async def login(dataReq: dict):
     
     user= await db.users.find_one({"email": email})
     if not user:
-        return {"success": False, "message": "Email không tồn tại"}
+        return {"success": False, "message": "Tài khoản hoặc mật khẩu không chính xác"}
     
     if user["password"] != password:
-        return {"success": False, "message": "Mật khẩu không chính xác"}
+        return {"success": False, "message": "Tài khoản hoặc mật khẩu không chính xác"}
     
     return {
         "success": True,

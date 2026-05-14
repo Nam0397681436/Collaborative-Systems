@@ -1,12 +1,11 @@
 import json
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from model.connection_socket import ConnectionManager
+from model.connection_socket import connection_manager
 from model.rabbit_mq import RabbitMQProducer, get_routing_key
 import logging
 logger=logging.getLogger("app.websocket")
 
 router = APIRouter()
-connection_manager = ConnectionManager()
 
 @router.websocket("/ws/{doc_id}/{user_id}")
 async def websocket_endpoint(websocket: WebSocket, doc_id: str, user_id: str):
@@ -14,21 +13,36 @@ async def websocket_endpoint(websocket: WebSocket, doc_id: str, user_id: str):
     Endpoint xử lý kết nối WebSocket cho từng document
     """
     await connection_manager.connect(websocket, doc_id)
+
     try:
         while True:
             data = await websocket.receive_json()
             msg_type= data.get("type")
 
-            if msg_type == "CURSOR":
-                await connection_manager.broadcast(
+            if msg_type == "JOIN":
+                user = data.get("user",{})
+                print("User joined:", user)
+                connection_manager.add_user(doc_id, user)
+                await connection_manager.broadcast_to_room(
+                    doc_id,
+                    {
+                        "type": "JOIN",
+                        "doc_id": doc_id,
+                        "user_id": user_id,
+                        "online_users": connection_manager.get_online_users(doc_id),
+                    },
+                )
+            
+            elif msg_type == "CURSOR":
+                await connection_manager.broadcast_to_room(
                     doc_id, 
-                    json.dumps({
+                    {
                         "type":"CURSOR",
                         "user_id": user_id,
                         "pos": data.get("pos"),
                         "color": data.get("color",None)
-                    })
-                    ) # dump data thanh json string
+                    }
+                    )
             elif msg_type == "EDIT":
                 payload={
                     "type": "EDIT",
@@ -47,8 +61,21 @@ async def websocket_endpoint(websocket: WebSocket, doc_id: str, user_id: str):
                     routing_key=routing_key
                 )
 
+            elif msg_type == "LEAVE":
+                break
+
     except WebSocketDisconnect:
         logger.info(f"User {user_id} disconnected")
-        await connection_manager.disconnect(websocket, doc_id)
+    finally:
+        await connection_manager.disconnect(websocket, doc_id, user_id)
+        await connection_manager.broadcast_to_room(
+            doc_id,
+            {
+                "type": "LEAVE",
+                "doc_id": doc_id,
+                "user_id": user_id,
+                "online_users": connection_manager.get_online_users(doc_id),
+            },
+        )
 
 # Năm
