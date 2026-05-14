@@ -1,11 +1,16 @@
 import aio_pika
 import json
 import hashlib 
+from dotenv import load_dotenv
+import os
+load_dotenv()
 
-# năm
+
+RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "localhost")
+RABBITMQ_PORT = int(os.getenv("RABBITMQ_PORT", 5672))
 
 class RabbitMQProducer:
-    def __init__(self, host: str = "localhost", port: int = 5672):
+    def __init__(self, host: str = RABBITMQ_HOST, port: int = RABBITMQ_PORT):
         self.host = host
         self.port = port
         self.connection = None
@@ -27,7 +32,7 @@ class RabbitMQProducer:
         await self.connection.close()
 
 class RabbitMQConsumer:
-    def __init__(self, host: str = "localhost", port: int = 5672):
+    def __init__(self, host: str = RABBITMQ_HOST, port: int = RABBITMQ_PORT):
         self.host = host
         self.port = port
         self.connection = None
