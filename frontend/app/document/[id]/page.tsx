@@ -334,7 +334,7 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
   return (
     <div className="min-h-screen bg-background flex flex-col">
       {/* Header */}
-      <header className="sticky top-0 z-50 border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+      <header className="sticky top-0 z-50 border-b border-border bg-background/95 backdrop-blur supports-backdrop-filter:bg-background/60">
         <div className="flex h-14 items-center justify-between px-4">
           <div className="flex items-center gap-3">
             <Button variant="ghost" size="icon" asChild>
@@ -348,9 +348,10 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
               </div>
               <div className="flex flex-col">
                 <Input
+                  disabled={userRole === "viewer" || userRole === "commenter"}
                   value={title}
                   onChange={(e) => handleTitleChange(e.target.value)}
-                  className="h-7 px-2 text-base font-medium bg-transparent border-transparent hover:border-border focus:border-primary w-auto min-w-[200px]"
+                  className="h-7 px-2 text-base font-medium bg-transparent border-transparent hover:border-border focus:border-primary w-auto min-w-50"
                 />
                 <div className="flex items-center gap-2 text-xs text-muted-foreground px-2">
                   <span className="flex items-center gap-1">
@@ -474,7 +475,10 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
       <div className="">
         {/* Editor */}
         <div className={`${showSidebar ? "w-[calc(100vw-20rem)]" : "w-full"} overflow-auto p-2`}>
-          <DocumentContentEditor editable={userRole ? userRole !== "viewer" : false} />
+          <DocumentContentEditor
+            editable={userRole ? userRole !== "viewer" : false}
+            initialContent={document.content_snapshot ?? ""}
+          />
         </div>
       </div>
     </div>

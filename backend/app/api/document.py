@@ -159,7 +159,7 @@ async def get_doc(docId: str, requesterId: str | None = Query(default=None)):
 async def get_user_documents(userId: str):
     """Lấy toàn bộ danh sách tài liệu mà người dùng được tham gia (chủ sở hữu hoặc cộng tác viên)"""
     db = get_db()
-    cursor = db.documents.find({"collaborators.user_id": userId})
+    cursor = db.documents.find({"collaborators.user_id": userId}).sort("updated_at", -1)
     docs = await cursor.to_list(length=100)
     
     formatted_documents = []
@@ -168,7 +168,8 @@ async def get_user_documents(userId: str):
             "_id": str(doc["_id"]),
             "title": doc.get("title"),
             "ownerId": doc.get("ownerId"),
-            "collaborators": doc.get("collaborators", [])
+            "collaborators": doc.get("collaborators", []),
+            "updated_at": doc.get("updated_at")
         })
         
     return {
@@ -180,7 +181,7 @@ async def get_user_documents(userId: str):
 async def get_shared_documents(userId: str):
     """Lấy toàn bộ danh sách tài liệu mà người dùng được chia sẻ"""
     db = get_db()
-    cursor = db.documents.find({"collaborators.user_id": userId, "ownerId": {"$ne": userId}})
+    cursor = db.documents.find({"collaborators.user_id": userId, "ownerId": {"$ne": userId}}).sort("updated_at", -1)
     docs = await cursor.to_list(length=100)
     
     formatted_documents = []
@@ -189,7 +190,8 @@ async def get_shared_documents(userId: str):
             "_id": str(doc["_id"]),
             "title": doc.get("title"),
             "ownerId": doc.get("ownerId"),
-            "collaborators": doc.get("collaborators", [])
+            "collaborators": doc.get("collaborators", []),
+            "updated_at": doc.get("updated_at")
         })
         
     return {
