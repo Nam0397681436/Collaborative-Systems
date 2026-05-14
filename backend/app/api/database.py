@@ -1,9 +1,9 @@
-from infra.mongodb.model.connectDB import ConnectMongoDB
-
-mongo_conn = ConnectMongoDB()
-
-def get_db():
-    return mongo_conn.get_db()
+from infra.mongodb.database import get_db
 
 def close_db():
-    mongo_conn.close()
+    """
+    Việc đóng kết nối Database hiện tại đã được quản lý tập trung bởi
+    FastAPI Lifespan trong file main.py (close_mongodb_connection).
+    Hàm này giữ lại để tương thích với các import cũ nếu có.
+    """
+    pass
