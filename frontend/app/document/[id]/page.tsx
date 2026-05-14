@@ -82,7 +82,7 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
   const [title, setTitle] = useState("")
   const [isLoading, setIsLoading] = useState(true)
   const [isStarred, setIsStarred] = useState(false)
-  const [showSidebar, setShowSidebar] = useState(true)
+  const [showSidebar, setShowSidebar] = useState(false)
   const [isShareDialogOpen, setIsShareDialogOpen] = useState(false)
   const [lastSaved, setLastSaved] = useState<Date | null>(null)
   const [onlineUsers, setOnlineUsers] = useState<any[]>([])
