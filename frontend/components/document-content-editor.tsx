@@ -1,10 +1,17 @@
 "use client"
 
+import { VectorClock } from "@/lib/api/documents"
+import { useAuth } from "@/lib/auth-context"
 import React, { useEffect, useRef } from "react"
 
 interface DocumentContentEditorProps {
     editable?: boolean
     initialContent?: string
+    socket: WebSocket | null
+    currentClock: number
+    setCurrentClock: React.Dispatch<React.SetStateAction<number>>
+    vectorClock: VectorClock
+    setVectorClock: React.Dispatch<React.SetStateAction<VectorClock>>
 }
 
 type Operation = {
@@ -16,18 +23,48 @@ type Operation = {
 const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
     editable = true,
     initialContent = "",
+    socket,
+    currentClock,
+    setCurrentClock,
+    vectorClock,
+    setVectorClock
 }) => {
+    const { user } = useAuth() // Giả sử có hook useAuth để lấy thông tin user
     const editorRef = useRef<HTMLDivElement>(null)
 
     useEffect(() => {
         if (!editorRef.current) return
+
         editorRef.current.innerText = initialContent
     }, [initialContent])
 
+    const sendEditWithClock = (op: Operation) => {
+        if (!socket || socket.readyState !== WebSocket.OPEN || !user) {
+            return
+        }
+
+        const newClock = currentClock + 1
+        const newVectorClock = {
+            ...vectorClock,
+            [user.id]: newClock
+        }
+
+        setCurrentClock(newClock)
+        setVectorClock((prev) => ({
+            ...prev,
+            [user.id]: newClock
+        }))
+
+        socket.send(JSON.stringify({
+            type: "EDIT",
+            op,
+            v_clock: newVectorClock
+        }))
+    }
+
+
     /**
-     * Duyệt DOM tree thủ công để tính offset chính xác.
-     * contentEditable dùng <br> và <div> thay vì \n thật,
-     * nên range.toString() đếm thiếu \n → phải tự walk.
+     * Tính offset thật trong contentEditable
      */
     const getCaretOffset = (
         root: HTMLElement,
@@ -37,133 +74,238 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
         let offset = 0
         let found = false
 
-        const walk = (node: Node, parentNode: Node | null): void => {
+        const walk = (node: Node) => {
             if (found) return
 
+            // caret node
             if (node === targetNode) {
                 if (node.nodeType === Node.TEXT_NODE) {
                     offset += targetOffset
                 }
+
                 found = true
                 return
             }
 
+            // text
             if (node.nodeType === Node.TEXT_NODE) {
                 offset += node.textContent?.length ?? 0
                 return
             }
 
-            if (node.nodeName === "BR") {
-                offset += 1 // <br> = \n
-                return
-            }
-
-            // Block elements (div, p) → thêm \n trước nội dung
-            // trừ phần tử đầu tiên (root)
-            const isBlock =
-                node !== root &&
+            // empty block line
+            if (
                 node.nodeType === Node.ELEMENT_NODE &&
-                ["DIV", "P"].includes((node as Element).tagName)
+                ["DIV", "P"].includes(
+                    (node as HTMLElement).tagName
+                )
+            ) {
+                const el = node as HTMLElement
 
-            if (isBlock) {
-                // Chỉ thêm \n nếu không phải con đầu tiên của root
-                const parent = node.parentNode
-                if (parent && parent.childNodes[0] !== node) {
+                const isEmptyLine =
+                    el.childNodes.length === 1 &&
+                    el.childNodes[0].nodeName === "BR"
+
+                // newline cho empty line
+                if (isEmptyLine) {
+                    offset += 1
+                    return
+                }
+
+                // block bình thường
+                const parent = el.parentNode
+
+                if (
+                    node !== root &&
+                    parent &&
+                    parent.childNodes[0] !== node
+                ) {
                     offset += 1
                 }
             }
 
+            // br standalone
+            if (node.nodeName === "BR") {
+                offset += 1
+                return
+            }
+
             for (const child of Array.from(node.childNodes)) {
-                walk(child, node)
+                walk(child)
+
                 if (found) return
             }
         }
 
-        walk(root, null)
+        walk(root)
+
         return offset
     }
 
-    const getCaretPosition = (el: HTMLElement): number => {
-        const sel = window.getSelection()
-        if (!sel || sel.rangeCount === 0) return 0
+    /**
+     * caret position
+     */
+    const getCaretPosition = (
+        el: HTMLElement
+    ): number => {
+        const selection = window.getSelection()
 
-        const range = sel.getRangeAt(0)
-        return getCaretOffset(el, range.endContainer, range.endOffset)
+        if (!selection || selection.rangeCount === 0) {
+            return 0
+        }
+
+        const range = selection.getRangeAt(0)
+
+        return getCaretOffset(
+            el,
+            range.endContainer,
+            range.endOffset
+        )
     }
 
-    const getRawText = (el: HTMLElement): string => {
-        // innerText đã xử lý block → \n khá tốt,
-        // normalize \r\n → \n cho Windows
+    /**
+     * raw text
+     */
+    const getRawText = (el: HTMLElement) => {
         return el.innerText.replace(/\r\n/g, "\n")
     }
 
+    /**
+     * INSERT operation
+     */
     useEffect(() => {
         const el = editorRef.current
+
         if (!el || !editable) return
 
-        const handleBeforeInput = (e: InputEvent) => {
-            const { inputType, data } = e
+        /**
+         * ENTER
+         * dùng beforeinput vì DOM chưa update
+         */
+        const handleBeforeInput = (
+            e: InputEvent
+        ) => {
+            const isNewLine =
+                e.inputType === "insertParagraph" ||
+                e.inputType === "insertLineBreak"
 
-            // Chỉ bắt insert
-            if (
-                inputType !== "insertText" &&
-                inputType !== "insertParagraph" &&
-                inputType !== "insertLineBreak"
-            ) return
+            if (!isNewLine) return
 
-            const insertedChar =
-                inputType === "insertParagraph" ||
-                inputType === "insertLineBreak"
-                    ? "\n"
-                    : data
-
-            if (!insertedChar) return
-
-            // ✅ Đọc position TRƯỚC khi browser thay đổi DOM
             const index = getCaretPosition(el)
 
             const op: Operation = {
                 type: "insert",
-                char: insertedChar,
+                char: "\n",
                 index,
             }
 
             console.log("INSERT OP:", op)
 
-            /*
-            websocket.send(JSON.stringify({ type: "EDIT", op }))
-            */
+            sendEditWithClock(op)
         }
 
-        el.addEventListener("beforeinput", handleBeforeInput)
-        return () => el.removeEventListener("beforeinput", handleBeforeInput)
+        /**
+         * TEXT INSERT
+         * dùng input vì DOM đã update
+         */
+        const handleInput = (e: Event) => {
+            const inputEvent = e as InputEvent
+
+            if (
+                inputEvent.inputType !==
+                "insertText"
+            ) {
+                return
+            }
+
+            const char = inputEvent.data
+
+            if (!char) return
+
+            const position = getCaretPosition(el)
+
+            const op: Operation = {
+                type: "insert",
+                char,
+                index: position - 1,
+            }
+
+            console.log("INSERT OP:", op)
+
+            sendEditWithClock(op)
+        }
+
+        el.addEventListener(
+            "beforeinput",
+            handleBeforeInput
+        )
+
+        el.addEventListener(
+            "input",
+            handleInput
+        )
+
+        return () => {
+            el.removeEventListener(
+                "beforeinput",
+                handleBeforeInput
+            )
+
+            el.removeEventListener(
+                "input",
+                handleInput
+            )
+        }
     }, [editable])
 
-    const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    /**
+     * DELETE operation
+     */
+    const handleKeyDown = (
+        e: React.KeyboardEvent<HTMLDivElement>
+    ) => {
         if (!editorRef.current) return
 
         const el = editorRef.current
+
         const value = getRawText(el)
+
         const position = getCaretPosition(el)
 
         let op: Operation | null = null
 
+        /**
+         * BACKSPACE
+         */
         if (e.key === "Backspace") {
             if (position <= 0) return
+
             const index = position - 1
-            op = { type: "delete", char: value[index], index }
+
+            op = {
+                type: "delete",
+                char: value[index],
+                index,
+            }
         }
 
+        /**
+         * DELETE
+         */
         if (e.key === "Delete") {
             if (position >= value.length) return
-            op = { type: "delete", char: value[position], index: position }
+
+            op = {
+                type: "delete",
+                char: value[position],
+                index: position,
+            }
         }
 
         if (op) {
             console.log("DELETE OP:", op)
-            /*
-            websocket.send(JSON.stringify({ type: "EDIT", op }))
-            */
+
+            sendEditWithClock(op)
         }
     }
 
@@ -178,12 +320,13 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
                 className={`
                     min-h-screen
                     whitespace-pre-wrap
-                    break-words
+                    wrap-break-word
                     focus:outline-none
                     text-black
-                    
                     leading-relaxed
-                    ${!editable ? "pointer-events-none opacity-80" : ""}
+                    ${!editable
+                        ? "pointer-events-none opacity-80"
+                        : ""}
                 `}
             />
         </div>

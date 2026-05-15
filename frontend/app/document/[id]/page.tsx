@@ -15,6 +15,7 @@ import {
   type DocumentItem,
   type Collaborator,
   type DocumentRole,
+  type VectorClock,
 } from "@/lib/api/documents"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -80,9 +81,10 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
 
   const [document, setDocument] = useState<DocumentItem | null>(null)
   const [title, setTitle] = useState("")
+  const [vectorClock, setVectorClock] = useState<VectorClock>({})
+  const [currentClock, setCurrentClock] = useState(0)
   const [isLoading, setIsLoading] = useState(true)
   const [isStarred, setIsStarred] = useState(false)
-  const [showSidebar, setShowSidebar] = useState(false)
   const [isShareDialogOpen, setIsShareDialogOpen] = useState(false)
   const [lastSaved, setLastSaved] = useState<Date | null>(null)
   const [onlineUsers, setOnlineUsers] = useState<any[]>([])
@@ -100,6 +102,8 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
       if (res.success && res.document) {
         setDocument(res.document)
         setTitle(res.document.title ?? "")
+        setVectorClock(res.document.global_v_clock ?? {})
+        setCurrentClock(res.document.global_v_clock ? res.document.global_v_clock[user.id] ?? 0 : 0)
       }
     } catch (err) {
       toast.error("Không tìm thấy tài liệu hoặc bạn không có quyền truy cập")
@@ -474,10 +478,15 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
       {/* Main Content */}
       <div className="">
         {/* Editor */}
-        <div className={`${showSidebar ? "w-[calc(100vw-20rem)]" : "w-full"} overflow-auto p-2`}>
+        <div className={`w-[calc(100vw-20rem)] overflow-auto p-2`}>
           <DocumentContentEditor
             editable={userRole ? userRole !== "viewer" : false}
             initialContent={document.content_snapshot ?? ""}
+            socket={socketRef.current}
+            currentClock={currentClock}
+            setCurrentClock={setCurrentClock}
+            vectorClock={vectorClock}
+            setVectorClock={setVectorClock}
           />
         </div>
       </div>

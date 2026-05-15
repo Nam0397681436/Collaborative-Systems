@@ -9,11 +9,16 @@ export interface Collaborator {
   role: DocumentRole
 }
 
+export type VectorClock = {
+  [userId: string]: number
+}
+
 export interface DocumentItem {
   _id: string
   title?: string
   ownerId: string | { _id: string; username: string; email: string }
   collaborators: Collaborator[]
+  global_v_clock: VectorClock
   content_snapshot?: string
   created_at?: string
   updated_at?: string
