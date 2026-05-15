@@ -1,7 +1,7 @@
 import json
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from model.connection_socket import connection_manager
-# from infra.rabbitmq import RabbitMQProducer, get_routing_key
+from infra.rabbitmq.rabbit_mq_gateway import RabbitMQProducer, get_routing_key
 import logging
 logger=logging.getLogger("app.websocket")
 
@@ -21,7 +21,6 @@ async def websocket_endpoint(websocket: WebSocket, doc_id: str, user_id: str):
 
             if msg_type == "JOIN":
                 user = data.get("user",{})
-                print("User joined:", user)
                 connection_manager.add_user(doc_id, user)
                 await connection_manager.broadcast_to_room(
                     doc_id,
@@ -39,8 +38,7 @@ async def websocket_endpoint(websocket: WebSocket, doc_id: str, user_id: str):
                     {
                         "type":"CURSOR",
                         "user_id": user_id,
-                        "pos": data.get("pos"),
-                        "color": data.get("color",None)
+                        "pos": data.get("pos")
                     }
                     )
             elif msg_type == "EDIT":
