@@ -67,7 +67,7 @@ class RabbitMQProducer:
     def __init__(self):
         self.channel = get_producer_channel()
 
-    async def publish(self, message: str, exchange: str, routing_key: str):
+    async def publish(self, message: str, exchange: str, routing_key: str = "", exchange_type: str = "direct", durable: bool = True):
         msg = aio_pika.Message(
             body=message.encode(),
             content_type="application/json",
@@ -75,8 +75,8 @@ class RabbitMQProducer:
         )
         exchange_obj = await self.channel.declare_exchange(
             name=exchange,
-            type="direct",
-            durable=True
+            type=exchange_type,
+            durable=durable
         )
         await exchange_obj.publish(msg, routing_key=routing_key)
 
