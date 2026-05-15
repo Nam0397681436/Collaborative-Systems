@@ -8,10 +8,11 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { useAuth } from "@/lib/auth-context"
 import { FileText, Eye, EyeOff } from "lucide-react"
+import { loginApi } from "@/lib/api/auth"
 
 export default function LoginPage() {
   const router = useRouter()
-  const { user, login } = useAuth()
+  const { user, handleUser } = useAuth()
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [showPassword, setShowPassword] = useState(false)
@@ -30,15 +31,24 @@ export default function LoginPage() {
       return
     }
     setIsLoading(true)
-    await login(email, password)
-    setIsLoading(false)
-    router.push("/dashboard")
+    try {
+      const payload = await loginApi(email, password)
+      if (!payload.success || !payload.data?.user) {
+        setError(payload.message ?? "Đăng nhập thất bại")
+        return
+      }
+      handleUser(payload.data.user)
+    } catch (err) {
+      setError((err as Error).message || "Đăng nhập thất bại")
+    } finally {
+      setIsLoading(false)
+    }
   }
 
   return (
     <div className="min-h-screen flex bg-background">
       {/* Left panel - branding */}
-      <div className="hidden lg:flex lg:w-1/2 bg-primary flex-col justify-between p-12">
+      <div className="hidden lg:flex lg:w-1/2 bg-primary flex-col it justify-center gap-6 p-12">
         <div className="flex items-center gap-2">
           <div className="w-9 h-9 rounded-lg bg-primary-foreground/20 flex items-center justify-center">
             <FileText className="w-5 h-5 text-primary-foreground" />
@@ -53,20 +63,6 @@ export default function LoginPage() {
           <p className="text-primary-foreground/80 text-lg leading-relaxed">
             Làm việc cùng nhau trên cùng một tài liệu. Xem thay đổi ngay lập tức, quản lý phân quyền linh hoạt.
           </p>
-        </div>
-
-        <div className="grid grid-cols-2 gap-4">
-          {[
-            { label: "Người dùng", value: "2,400+" },
-            { label: "Tài liệu", value: "18,000+" },
-            { label: "Cộng tác viên", value: "8,500+" },
-            { label: "Uptime", value: "99.9%" },
-          ].map((stat) => (
-            <div key={stat.label} className="bg-primary-foreground/10 rounded-xl p-4">
-              <div className="text-2xl font-bold text-primary-foreground">{stat.value}</div>
-              <div className="text-sm text-primary-foreground/70">{stat.label}</div>
-            </div>
-          ))}
         </div>
       </div>
 

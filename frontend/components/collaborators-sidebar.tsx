@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { JSX, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -18,9 +18,10 @@ import {
   UserPlus,
   Circle,
   Search,
+  MessageSquare,
 } from "lucide-react"
 
-type UserRole = "owner" | "editor" | "viewer"
+type UserRole = "owner" | "editor" | "viewer"| "commenter"
 
 interface User {
   id: string
@@ -36,9 +37,11 @@ interface CollaboratorsSidebarProps {
   users: User[]
   onClose: () => void
   onOpenShare: () => void
+  canManageRoles?: boolean
+  onChangeUserRole?: (userId: string, role: "editor" | "viewer" | "remove") => Promise<void> | void
 }
 
-export function CollaboratorsSidebar({ users, onClose, onOpenShare }: CollaboratorsSidebarProps) {
+export function CollaboratorsSidebar({ users, onClose, onOpenShare, canManageRoles = false, onChangeUserRole }: CollaboratorsSidebarProps) {
   const [searchQuery, setSearchQuery] = useState("")
 
   const onlineUsers = users.filter((u) => u.isOnline)
@@ -64,6 +67,8 @@ export function CollaboratorsSidebar({ users, onClose, onOpenShare }: Collaborat
         return <Pencil className="w-3 h-3 text-editor" />
       case "viewer":
         return <Eye className="w-3 h-3 text-viewer" />
+      case "commenter":
+        return <MessageSquare className="w-3 h-3 text-commenter" />
     }
   }
 
@@ -75,11 +80,13 @@ export function CollaboratorsSidebar({ users, onClose, onOpenShare }: Collaborat
         return "Biên tập viên"
       case "viewer":
         return "Người xem"
+      case "commenter":
+        return "Người bình luận"
     }
   }
 
   return (
-    <aside className="w-72 border-l border-border bg-card flex flex-col">
+    <aside className="w-full h-full relative border-l border-border bg-card flex flex-col">
       {/* Header */}
       <div className="flex items-center justify-between p-4 border-b border-border">
         <h3 className="font-semibold text-foreground">Người cộng tác</h3>
@@ -113,7 +120,14 @@ export function CollaboratorsSidebar({ users, onClose, onOpenShare }: Collaborat
           </div>
           <div className="space-y-1">
             {filteredOnlineUsers.map((user) => (
-              <UserItem key={user.id} user={user} getRoleIcon={getRoleIcon} getRoleLabel={getRoleLabel} />
+              <UserItem
+                key={user.id}
+                user={user}
+                getRoleIcon={getRoleIcon}
+                getRoleLabel={getRoleLabel}
+                canManageRoles={canManageRoles}
+                onChangeUserRole={onChangeUserRole}
+              />
             ))}
           </div>
         </div>
@@ -129,7 +143,15 @@ export function CollaboratorsSidebar({ users, onClose, onOpenShare }: Collaborat
             </div>
             <div className="space-y-1">
               {filteredOfflineUsers.map((user) => (
-                <UserItem key={user.id} user={user} getRoleIcon={getRoleIcon} getRoleLabel={getRoleLabel} isOffline />
+                <UserItem
+                  key={user.id}
+                  user={user}
+                  getRoleIcon={getRoleIcon}
+                  getRoleLabel={getRoleLabel}
+                  isOffline
+                  canManageRoles={canManageRoles}
+                  onChangeUserRole={onChangeUserRole}
+                />
               ))}
             </div>
           </div>
@@ -137,7 +159,7 @@ export function CollaboratorsSidebar({ users, onClose, onOpenShare }: Collaborat
       </div>
 
       {/* Add People Button */}
-      <div className="p-3 border-t border-border">
+      <div className="p-3 border-t border-border position-sticky bottom-0 bg-card">
         <Button variant="outline" className="w-full gap-2" onClick={onOpenShare}>
           <UserPlus className="w-4 h-4" />
           Thêm người cộng tác
@@ -152,9 +174,13 @@ interface UserItemProps {
   getRoleIcon: (role: UserRole) => JSX.Element
   getRoleLabel: (role: UserRole) => string
   isOffline?: boolean
+  canManageRoles?: boolean
+  onChangeUserRole?: (userId: string, role: "editor" | "viewer" | "remove") => Promise<void> | void
 }
 
-function UserItem({ user, getRoleIcon, getRoleLabel, isOffline }: UserItemProps) {
+function UserItem({ user, getRoleIcon, getRoleLabel, isOffline, canManageRoles = false, onChangeUserRole }: UserItemProps) {
+  const normalizedRole = user.role === "commenter" ? "viewer" : user.role
+
   return (
     <div className={`flex items-center justify-between p-2 rounded-lg hover:bg-secondary group ${isOffline ? 'opacity-60' : ''}`}>
       <div className="flex items-center gap-3">
@@ -178,9 +204,9 @@ function UserItem({ user, getRoleIcon, getRoleLabel, isOffline }: UserItemProps)
         </div>
       </div>
       
-      {user.role !== "owner" && (
-        <Select defaultValue={user.role}>
-          <SelectTrigger className="w-[90px] h-7 text-xs opacity-0 group-hover:opacity-100 transition-opacity">
+      {user.role !== "owner" && canManageRoles && (
+        <Select value={normalizedRole} onValueChange={(value) => onChangeUserRole?.(user.id, value as "editor" | "viewer" | "remove") }>
+          <SelectTrigger className="w-22.5 h-7 text-xs opacity-0 group-hover:opacity-100 transition-opacity">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -191,7 +217,7 @@ function UserItem({ user, getRoleIcon, getRoleLabel, isOffline }: UserItemProps)
             </SelectItem>
           </SelectContent>
         </Select>
-      )}
+      ) }
     </div>
   )
 }

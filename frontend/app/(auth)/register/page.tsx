@@ -8,10 +8,12 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { useAuth } from "@/lib/auth-context"
 import { FileText, Eye, EyeOff, Check } from "lucide-react"
+import { registerApi } from "@/lib/api/auth"
 
 export default function RegisterPage() {
   const router = useRouter()
-  const { user, login } = useAuth()
+  const [error, setError] = useState("")
+  const { user, handleUser } = useAuth()
   const [name, setName] = useState("")
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
@@ -27,11 +29,21 @@ export default function RegisterPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (!name || !email || !password || !confirmPassword) return
     if (password !== confirmPassword) return
     setIsLoading(true)
-    await login(email, password)
-    setIsLoading(false)
-    router.push("/dashboard")
+    try {
+      const payload = await registerApi(email, name, password)
+      if (payload.success && payload.data?.user) {
+        handleUser(payload.data.user)
+      } else {
+        setError(payload.message ?? "Đăng ký thất bại")
+      }
+    } catch (err) {
+      // Register flow handles persistence; keep the page stable if backend is unavailable.
+    } finally {
+      setIsLoading(false)
+    }
   }
 
   return (
@@ -50,6 +62,15 @@ export default function RegisterPage() {
             <p className="text-muted-foreground mt-2">Bắt đầu cộng tác với đội ngũ của bạn</p>
           </div>
         </div>
+
+        {
+          error && (
+            <div className="flex items-center gap-2 bg-destructive/10 text-destructive rounded-md p-3">
+              <Check className="w-4 h-4" />
+              <span className="text-sm">{error}</span>
+            </div>
+          )
+        }
 
         {/* Form */}
         <form onSubmit={handleSubmit} className="space-y-5">
