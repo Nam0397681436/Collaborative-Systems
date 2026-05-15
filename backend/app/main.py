@@ -28,15 +28,15 @@ app = FastAPI(title="Collaborative Text Editor API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:4000"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["*"],
 )
 
-app.include_router(auth_router, prefix="/auth", tags=["Authentication"])
-app.include_router(document_router, tags=["Document Management"])
+app.include_router(auth_router, prefix="/api/auth", tags=["Authentication"])
+app.include_router(document_router, prefix="/api", tags=["Document Management"])
 app.include_router(websocket_router, tags=["WebSockets"])
 
 @app.get("/")
