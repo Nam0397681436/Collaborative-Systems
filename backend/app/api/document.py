@@ -28,6 +28,7 @@ async def get_docs(dataReq: dict):
         "title": title,
         "ownerId": ownerId,
         "collaborators": [{"user_id":ownerId,"role":"owner"}],
+        "global_v_clock": {ownerId: 0},
         "content_snapshot": "",
         "created_at": datetime.now(),
         "updated_at": datetime.now()
@@ -68,7 +69,8 @@ async def get_docs(dataReq: dict):
                 "content_snapshot": {"$first": "$content_snapshot"},
                 "created_at": {"$first": "$created_at"},
                 "updated_at": {"$first": "$updated_at"},
-                "collaborators": {"$push": "$collaborators"}
+                "collaborators": {"$push": "$collaborators"},
+                "global_v_clock": {"$first": "$global_v_clock"}
             }
         },
         {
@@ -138,7 +140,8 @@ async def get_doc(docId: str, requesterId: str | None = Query(default=None)):
                 "content_snapshot": {"$first": "$content_snapshot"},
                 "created_at": {"$first": "$created_at"},
                 "updated_at": {"$first": "$updated_at"},
-                "collaborators": {"$push": "$collaborators"}
+                "collaborators": {"$push": "$collaborators"},
+                "global_v_clock": {"$first": "$global_v_clock"}
             }
         },
         {
@@ -225,7 +228,6 @@ async def update_doc(docId: str, dataReq: dict):
         "document": updated_doc
     } 
 
-
 @router.post("/documents/{docId}/collaborators")
 async def add_collaborator(docId: str, dataReq: dict):
     
@@ -250,7 +252,10 @@ async def add_collaborator(docId: str, dataReq: dict):
     
     result = await db.documents.update_one(
         {"_id": ObjectId(docId)},
-        {"$push": {"collaborators": {"user_id": collaborator_id, "role": role, "addedAt": datetime.now()}}}
+        {
+            "$push": {"collaborators": {"user_id": collaborator_id, "role": role, "addedAt": datetime.now()}},
+            "$set": {f"global_v_clock.{collaborator_id}": 0}
+        }
     )
     
     if result.matched_count == 0:
@@ -275,6 +280,14 @@ async def add_collaborator(docId: str, dataReq: dict):
     
     updated_doc["collaborators"] = populated_collaborators
     
+    # Include formatted global vector clock in the response
+    vector_clock = updated_doc.get("global_v_clock", {})
+    if isinstance(vector_clock, dict):
+        formatted_global_v_clock = {str(k): int(v) for k, v in vector_clock.items()}
+    else:
+        formatted_global_v_clock = {}
+    updated_doc["global_v_clock"] = formatted_global_v_clock
+
     return {
         "success": True,
         "document": updated_doc
