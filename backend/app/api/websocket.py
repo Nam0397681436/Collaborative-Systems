@@ -33,13 +33,18 @@ async def websocket_endpoint(websocket: WebSocket, doc_id: str, user_id: str):
                 )
             
             elif msg_type == "CURSOR":
+                # logger.info(f"User {user_id} sent cursor position: {data.get('index')}")
+                user_info = connection_manager.active_users.get(doc_id, {}).get(user_id, {})
+                cursor_msg = {
+                    "type":"CURSOR",
+                    "user_id": user_id,
+                    "index": data.get("index"),
+                    "username": user_info.get("username", "Unknown"),
+                    "color": user_info.get("color", "#000000")
+                }
                 await connection_manager.broadcast_to_room(
                     doc_id, 
-                    {
-                        "type":"CURSOR",
-                        "user_id": user_id,
-                        "pos": data.get("pos")
-                    }
+                    cursor_msg
                     )
             elif msg_type == "EDIT":
                 payload={
@@ -58,7 +63,7 @@ async def websocket_endpoint(websocket: WebSocket, doc_id: str, user_id: str):
                     exchange="ot_exchange",
                     routing_key=routing_key
                 )
-                logger.info(f"User {user_id} sent edit operation: {data.get('op')}")
+                # logger.info(f"User {user_id} sent edit operation: {data.get('op')}")
 
             elif msg_type == "LEAVE":
                 break
