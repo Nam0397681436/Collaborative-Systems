@@ -56,7 +56,7 @@ import {
 } from "lucide-react"
 import { CollaboratorsSidebar } from "@/components/collaborators-sidebar"
 import ShareDialog from "@/components/share-dialog"
-import DocumentContentEditor from "@/components/document-content-editor"
+import DocumentContentEditor, { Cursor, Operation } from "@/components/document-content-editor"
 import { toast } from "sonner"
 
 
@@ -89,9 +89,13 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
   const [lastSaved, setLastSaved] = useState<Date | null>(null)
   const [onlineUsers, setOnlineUsers] = useState<any[]>([])
   const [userRole, setUserRole] = useState<string | null>(null)
+  const [remoteCursors, setRemoteCursors] = useState<Cursor[]>([])
 
   const titleDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const socketRef = useRef<WebSocket | null>(null)
+
+  const handleRemoteEditRef = useRef<(op: Operation) => void>(() => { })
+  // const handleRenderCursorRef = useRef<(cursors: Cursor[]) => void>(() => { })
 
   // ── Fetch document ────────────────────────────────────────────────────────
   const fetchDocument = useCallback(async () => {
@@ -103,7 +107,7 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
         setDocument(res.document)
         setTitle(res.document.title ?? "")
         setVectorClock(res.document.global_v_clock ?? {})
-        setCurrentClock(res.document.global_v_clock ? res.document.global_v_clock[user.id] ?? 0 : 0)
+        setCurrentClock(Math.max(...Object.values(res.document.global_v_clock ?? {}), 0))
       }
     } catch (err) {
       toast.error("Không tìm thấy tài liệu hoặc bạn không có quyền truy cập")
@@ -152,9 +156,6 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
           role: currentUserRole,
         }
       }))
-      setOnlineUsers((current) =>
-        current.some((u) => u.id === user.id) ? current : [...current, { ...user, isOnline: true }]
-      )
     }
 
     socket.onmessage = (event) => {
@@ -164,6 +165,8 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
           user_id?: string
           online_users?: any[]
           new_role?: string
+          op?: Operation
+          v_clock?: VectorClock
         }
 
         console.log("WebSocket message received:", message)
@@ -183,6 +186,7 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
 
 
         if (message.type === "JOIN") {
+          console.log(`User ${message.user_id} joined`)
           if (message.user_id) {
             setOnlineUsers(message.online_users || [])
           }
@@ -201,6 +205,45 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
               setUserRole(message.new_role)
               toast.info(`Vai trò của bạn đã được cập nhật thành ${message.new_role}`)
             }
+          }
+        }
+
+        if (message.type === "CURSOR") {
+          console.log("🔴 CURSOR message received:", message)
+          if (!user || message.user_id === user.id) {
+            console.log("⚠️ CURSOR ignored - same user or no user")
+            return
+          }
+          const { index, username, color } = message as { index?: number; username?: string; color?: string }
+          console.log("📍 Cursor data:", { index, username, color, user_id: message.user_id })
+          if (index === undefined || !username || !color) {
+            console.error("❌ CURSOR validation failed - missing data:", { index, username, color })
+            return
+          }
+          console.log("✅ Updating remoteCursors with:", { user_id: message.user_id, username, color, index })
+          setRemoteCursors((current) => {
+            const others = current.filter(c => c.user_id !== message.user_id)
+            const updated = [...others, { user_id: message.user_id!, username, color, index }]
+            console.log("📊 New remoteCursors:", updated)
+            return updated
+          }
+          )
+        }
+
+        if (message.type === "EDIT") {
+          if (!user || message.user_id === user.id) {
+            return
+          }
+          const { op, v_clock } = message as { op?: Operation; v_clock?: VectorClock }
+          if (!op || !v_clock) return
+          setVectorClock(v_clock)
+          setCurrentClock(Math.max(...Object.values(v_clock ?? {}), currentClock))
+          try {
+            if (typeof handleRemoteEditRef.current === "function") {
+              handleRemoteEditRef.current(op)
+            }
+          } catch (handlerErr) {
+            console.error("Error executing remote edit handler:", handlerErr)
           }
         }
 
@@ -281,27 +324,6 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
   }
 
   const isOwner = Boolean(user && document && user.id === document.ownerId)
-
-  const handleSidebarRoleChange = async (targetUserId: string, role: "editor" | "viewer" | "remove") => {
-    if (!user) return
-    try {
-      if (role === "remove") {
-        const res = await removeCollaboratorApi(id, targetUserId, user.id)
-        if (res.success && res.document) {
-          handleCollaboratorsChange(res.document.collaborators ?? [])
-        }
-        return
-      }
-
-      const res = await updateCollaboratorRoleApi(id, targetUserId, role as DocumentRole, user.id)
-      if (res.success && res.document) {
-        handleCollaboratorsChange(res.document.collaborators ?? [])
-      }
-    } catch (err) {
-      console.error("Lỗi cập nhật quyền cộng tác viên:", err)
-    }
-  }
-
 
   // ── Loading ───────────────────────────────────────────────────────────────
   if (isLoading) {
@@ -478,8 +500,9 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
       {/* Main Content */}
       <div className="">
         {/* Editor */}
-        <div className={`w-[calc(100vw-20rem)] overflow-auto p-2`}>
+        <div className={`w-full overflow-auto p-2`}>
           <DocumentContentEditor
+            remoteCursors={remoteCursors}
             editable={userRole ? userRole !== "viewer" : false}
             initialContent={document.content_snapshot ?? ""}
             socket={socketRef.current}
@@ -487,6 +510,7 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
             setCurrentClock={setCurrentClock}
             vectorClock={vectorClock}
             setVectorClock={setVectorClock}
+            handleRemoteEditRef={handleRemoteEditRef}
           />
         </div>
       </div>
