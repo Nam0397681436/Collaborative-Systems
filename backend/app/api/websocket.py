@@ -75,7 +75,7 @@ async def websocket_endpoint(websocket: WebSocket, doc_id: str, user_id: str):
                     exchange="ot_exchange",
                     routing_key=routing_key
                 )
-                # logger.info(f"User {user_id} sent edit operation: {data.get('op')}")
+                logger.info(f"User {user_id} sent edit operation: {data.get('op')}")
 
             elif msg_type == "LEAVE":
                 break

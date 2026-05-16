@@ -175,9 +175,9 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
           color?: string
         }
 
-        console.log("WebSocket message received:", message)
-
         if (!message.type) return
+
+        console.log("Received WS message:", message)
 
         if (message.type === "ERROR") {
           // Server rejected join or other error
@@ -192,7 +192,6 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
 
 
         if (message.type === "JOIN") {
-          console.log(`User ${message.user_id} joined`)
           if (message.user_id) {
             setOnlineUsers(message.online_users || [])
           }
@@ -215,22 +214,16 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
         }
 
         if (message.type === "CURSOR") {
-          console.log("🔴 CURSOR message received:", message)
           if (!user || message.user_id === user.id) {
-            console.log("⚠️ CURSOR ignored - same user or no user")
             return
           }
           const { left, top, height, width, username, color } = message as { left?: number; top?: number; height?: number; width?: number; username?: string; color?: string }
-          console.log("📍 Cursor data:", { left, top, height, width, username, color, user_id: message.user_id })
           if (left === undefined || top === undefined || height === undefined || !username || !color) {
-            console.error("❌ CURSOR validation failed - missing data:", { left, top, height, width, username, color })
             return
           }
-          console.log("✅ Updating remoteCursors with:", { user_id: message.user_id, username, color, left, top, height, width })
           setRemoteCursors((current) => {
             const others = current.filter(c => c.user_id !== message.user_id)
             const updated = [...others, { user_id: message.user_id!, username, color, left, top, height, width }]
-            console.log("📊 New remoteCursors:", updated)
             return updated
           }
           )
@@ -244,7 +237,6 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
           try {
             handleRemoteEditRef.current?.(op, message.user_id)
           } catch (handlerErr) {
-            console.error("Error executing remote edit handler:", handlerErr)
           }
         }
 
@@ -268,7 +260,6 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
           setOnlineUsers((current) => current.filter((u) => u.id !== message.user_id))
         }
       } catch (err) {
-        console.error("Lỗi parse websocket message:", err)
       }
     }
 
