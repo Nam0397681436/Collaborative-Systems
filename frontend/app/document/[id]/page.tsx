@@ -94,7 +94,7 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
   const titleDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const socketRef = useRef<WebSocket | null>(null)
 
-  const handleRemoteEditRef = useRef<(op: Operation) => void>(() => { })
+  const handleRemoteEditRef = useRef<(op: Operation, remoteUserId?: string) => void>(() => { })
   // const handleRenderCursorRef = useRef<(cursors: Cursor[]) => void>(() => { })
 
   // ── Fetch document ────────────────────────────────────────────────────────
@@ -167,6 +167,12 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
           new_role?: string
           op?: Operation
           v_clock?: VectorClock
+          left?: number
+          top?: number
+          height?: number
+          width?: number
+          username?: string
+          color?: string
         }
 
         console.log("WebSocket message received:", message)
@@ -214,16 +220,16 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
             console.log("⚠️ CURSOR ignored - same user or no user")
             return
           }
-          const { index, username, color } = message as { index?: number; username?: string; color?: string }
-          console.log("📍 Cursor data:", { index, username, color, user_id: message.user_id })
-          if (index === undefined || !username || !color) {
-            console.error("❌ CURSOR validation failed - missing data:", { index, username, color })
+          const { left, top, height, width, username, color } = message as { left?: number; top?: number; height?: number; width?: number; username?: string; color?: string }
+          console.log("📍 Cursor data:", { left, top, height, width, username, color, user_id: message.user_id })
+          if (left === undefined || top === undefined || height === undefined || !username || !color) {
+            console.error("❌ CURSOR validation failed - missing data:", { left, top, height, width, username, color })
             return
           }
-          console.log("✅ Updating remoteCursors with:", { user_id: message.user_id, username, color, index })
+          console.log("✅ Updating remoteCursors with:", { user_id: message.user_id, username, color, left, top, height, width })
           setRemoteCursors((current) => {
             const others = current.filter(c => c.user_id !== message.user_id)
-            const updated = [...others, { user_id: message.user_id!, username, color, index }]
+            const updated = [...others, { user_id: message.user_id!, username, color, left, top, height, width }]
             console.log("📊 New remoteCursors:", updated)
             return updated
           }
@@ -231,17 +237,12 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
         }
 
         if (message.type === "EDIT") {
-          if (!user || message.user_id === user.id) {
-            return
-          }
           const { op, v_clock } = message as { op?: Operation; v_clock?: VectorClock }
           if (!op || !v_clock) return
           setVectorClock(v_clock)
           setCurrentClock(Math.max(...Object.values(v_clock ?? {}), currentClock))
           try {
-            if (typeof handleRemoteEditRef.current === "function") {
-              handleRemoteEditRef.current(op)
-            }
+            handleRemoteEditRef.current?.(op, message.user_id)
           } catch (handlerErr) {
             console.error("Error executing remote edit handler:", handlerErr)
           }

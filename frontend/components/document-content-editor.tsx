@@ -13,7 +13,7 @@ interface DocumentContentEditorProps {
     setCurrentClock: React.Dispatch<React.SetStateAction<number>>
     vectorClock: VectorClock
     setVectorClock: React.Dispatch<React.SetStateAction<VectorClock>>
-    handleRemoteEditRef?: React.MutableRefObject<(op: Operation) => void>
+    handleRemoteEditRef?: React.MutableRefObject<(op: Operation, remoteUserId?: string) => void>
 }
 
 export type Operation = {
@@ -26,7 +26,10 @@ export type Cursor = {
     user_id: string
     username: string
     color: string
-    index: number
+    left: number
+    top: number
+    height: number
+    width?: number
 }
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -81,6 +84,97 @@ const renderEditorText = (el: HTMLElement, text: string) => {
     }).join('')
 }
 
+// ─── OT: Text helpers ────────────────────────────────────────────────────────
+
+// Apply một op lên chuỗi text thuần
+function applyOp(text: string, op: Operation): string {
+    if (op.type === "insert") {
+        const i = Math.max(0, Math.min(op.index, text.length))
+        return text.slice(0, i) + op.char + text.slice(i)
+    }
+    if (op.type === "delete") {
+        if (op.index < 0 || op.index >= text.length) return text
+        return text.slice(0, op.index) + text.slice(op.index + 1)
+    }
+    return text
+}
+
+// Inverse của một op (để undo)
+function invertOp(op: Operation, text: string): Operation {
+    if (op.type === "insert") {
+        // undo insert → delete tại đúng index đó
+        return { type: "delete", char: op.char, index: op.index }
+    }
+    // undo delete → insert lại ký tự đó
+    return { type: "insert", char: op.char, index: op.index }
+}
+
+// Transform op `b` dựa trên op `a` đã được apply trước
+// Dùng để tái apply pending ops sau khi đã insert server op
+function transformAfter(b: Operation, a: Operation, bUserId: string, aUserId: string): Operation {
+    if (a.type === "insert" && b.type === "insert") {
+        if (a.index < b.index) return { ...b, index: b.index + 1 }
+        if (a.index === b.index) {
+            // tie-break: user_id nhỏ hơn thắng (chèn trước) → b bị đẩy phải
+            return aUserId <= bUserId ? { ...b, index: b.index + 1 } : b
+        }
+        return b
+    }
+    if (a.type === "delete" && b.type === "insert") {
+        if (a.index < b.index) return { ...b, index: b.index - 1 }
+        return b
+    }
+    if (a.type === "insert" && b.type === "delete") {
+        if (a.index <= b.index) return { ...b, index: b.index + 1 }
+        return b
+    }
+    if (a.type === "delete" && b.type === "delete") {
+        if (a.index < b.index) return { ...b, index: b.index - 1 }
+        if (a.index === b.index) return { ...b, index: -1 } // no-op
+        return b
+    }
+    return b
+}
+
+function buildOpsFromTextDiff(prevText: string, nextText: string): Operation[] {
+    if (prevText === nextText) return []
+
+    let prefix = 0
+    const minLength = Math.min(prevText.length, nextText.length)
+    while (prefix < minLength && prevText[prefix] === nextText[prefix]) {
+        prefix += 1
+    }
+
+    let prevSuffix = prevText.length - 1
+    let nextSuffix = nextText.length - 1
+    while (prevSuffix >= prefix && nextSuffix >= prefix && prevText[prevSuffix] === nextText[nextSuffix]) {
+        prevSuffix -= 1
+        nextSuffix -= 1
+    }
+
+    const deletedText = prevText.slice(prefix, prevSuffix + 1)
+    const insertedText = nextText.slice(prefix, nextSuffix + 1)
+    const operations: Operation[] = []
+
+    for (let i = 0; i < deletedText.length; i++) {
+        operations.push({
+            type: "delete",
+            char: deletedText[i],
+            index: prefix,
+        })
+    }
+
+    for (let i = 0; i < insertedText.length; i++) {
+        operations.push({
+            type: "insert",
+            char: insertedText[i],
+            index: prefix + i,
+        })
+    }
+
+    return operations
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
@@ -100,8 +194,12 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
     const currentClockRef = useRef(currentClock)
     const vectorClockRef = useRef(vectorClock)
     const editorTextRef = useRef("")
+    const isNormalizingDomRef = useRef(false)
+
+    // ── OT: pending ops đã gửi lên server nhưng chưa được ack ────────────────
+    // Mỗi entry gồm op + user_id của mình để dùng tie-breaking
+    const pendingOpsRef = useRef<Array<{ op: Operation; userId: string }>>([])
     const isComposingRef = useRef(false)
-    const compositionStartTextRef = useRef("")
 
     useEffect(() => {
         currentClockRef.current = currentClock
@@ -120,7 +218,7 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
         
         // Tạo DOM đồng nhất từ initialContent
         renderEditorText(editorRef.current, initialContent)
-        editorTextRef.current = getSerializedEditorText(editorRef.current)
+        editorTextRef.current = initialContent
     }, [initialContent])
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -299,10 +397,6 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
         return pos
     }
 
-    const getCaretPosition = (el: HTMLElement): number => {
-        return getCaretOffset(el)
-    }
-
     // ═══════════════════════════════════════════════════════════════════════
     // 2. indexToNodeOffset - Decode: Index → DOM
     // ═══════════════════════════════════════════════════════════════════════
@@ -393,22 +487,12 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
 
                     if (currentParent !== nextParent) {
                         if (pos === targetIndex) {
-                            if (nextLeaf.type === 'empty') {
-                                return {
-                                    type: 'empty-line',
-                                    element: nextLeaf.element,
-                                    brElement: nextLeaf.br
-                                }
-                            } else if (nextLeaf.type === 'br-standalone') {
-                                return {
-                                    type: 'br-standalone',
-                                    br: nextLeaf.br
-                                }
-                            }
+                            // Cursor ở cuối dòng → trả về cuối node hiện tại,
+                            // KHÔNG nhảy sang đầu dòng dưới
                             return {
                                 type: 'text',
-                                node: nextLeaf.node,
-                                offset: 0
+                                node,
+                                offset: len
                             }
                         }
                         pos += 1
@@ -677,39 +761,16 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
 
         layer.innerHTML = ""
 
-        const editorRect = editor.getBoundingClientRect()
-        const scrollTop = editor.scrollTop
-        const scrollLeft = editor.scrollLeft
-
-        console.log("=== renderCursors ===")
-        console.log("Remote cursors:", JSON.stringify(remoteCursors))
-        console.log("Editor DOM:", editor.innerHTML)
-
         remoteCursors.forEach((cursor) => {
-            console.log(`\n--- Cursor ${cursor.username} ---`)
-            console.log("Index:", cursor.index)
-
-            const nodeResult = indexToNodeOffset(editor, cursor.index)
-            console.log("indexToNodeOffset:", nodeResult)
-
-            const rect = getRectFromIndex(editor, cursor.index)
-            console.log("getRectFromIndex:", rect)
-
-            if (!rect) {
-                console.warn("No rect found!")
+            if (cursor.left === undefined || cursor.top === undefined || cursor.height === undefined) {
                 return
             }
-
-            const left = rect.left - editorRect.left + scrollLeft
-            const top = rect.top - editorRect.top + scrollTop
-
-            console.log("Position:", { left, top })
 
             const cursorContainer = document.createElement("div")
             cursorContainer.style.cssText = `
                 position: absolute;
-                left: ${left}px;
-                top: ${top}px;
+                left: ${cursor.left}px;
+                top: ${cursor.top}px;
                 pointer-events: auto;
                 z-index: 100;
             `
@@ -717,8 +778,8 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
             const line = document.createElement("div")
             line.style.cssText = `
                 position: absolute;
-                height: ${rect.height}px;
-                width: 2px;
+                height: ${cursor.height}px;
+                width: 1px;
                 left: 0;
                 top: 0;
                 background-color: ${cursor.color};
@@ -769,7 +830,7 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
             cursorContainer.appendChild(label)
             layer.appendChild(cursorContainer)
         })
-    }, [getRectFromIndex, remoteCursors, indexToNodeOffset])
+    }, [remoteCursors])
 
     useEffect(() => {
         renderCursors()
@@ -807,60 +868,33 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
         setCurrentClock(newClock)
         setVectorClock(newVectorClock)
 
+        // Track op này là "pending" — đã apply local nhưng server chưa broadcast lại
+        pendingOpsRef.current.push({ op, userId: user.id })
+
         socket.send(JSON.stringify({ type: "EDIT", op, v_clock: newVectorClock }))
     }
 
-    const sendCursorPosition = (index: number) => {
-        if (!socket || socket.readyState !== WebSocket.OPEN || !user) return
-        socket.send(JSON.stringify({ type: "CURSOR", index }))
+    const sendCursorPosition = () => {
+        if (!socket || socket.readyState !== WebSocket.OPEN || !user || !editorRef.current) return
+
+        const editor = editorRef.current
+        const index = getCaretOffset(editor)
+        const rect = getRectFromIndex(editor, index)
+        if (!rect) return
+
+        const editorRect = editor.getBoundingClientRect()
+        socket.send(JSON.stringify({
+            type: "CURSOR",
+            left: rect.left - editorRect.left + editor.scrollLeft,
+            top: rect.top - editorRect.top + editor.scrollTop,
+            height: rect.height,
+            width: rect.width,
+        }))
     }
 
     // ═══════════════════════════════════════════════════════════════════════
     // Raw text
     // ═══════════════════════════════════════════════════════════════════════
-
-    const getRawText = (el: HTMLElement) => {
-        return getSerializedEditorText(el)
-    }
-
-    const buildOpsFromTextDiff = (prevText: string, nextText: string): Operation[] => {
-        if (prevText === nextText) return []
-
-        let prefix = 0
-        const minLen = Math.min(prevText.length, nextText.length)
-        while (prefix < minLen && prevText[prefix] === nextText[prefix]) {
-            prefix += 1
-        }
-
-        let prevSuffix = prevText.length - 1
-        let nextSuffix = nextText.length - 1
-        while (prevSuffix >= prefix && nextSuffix >= prefix && prevText[prevSuffix] === nextText[nextSuffix]) {
-            prevSuffix -= 1
-            nextSuffix -= 1
-        }
-
-        const deletedText = prevText.slice(prefix, prevSuffix + 1)
-        const insertedText = nextText.slice(prefix, nextSuffix + 1)
-        const ops: Operation[] = []
-
-        for (let i = 0; i < deletedText.length; i++) {
-            ops.push({
-                type: "delete",
-                char: deletedText[i],
-                index: prefix,
-            })
-        }
-
-        for (let i = 0; i < insertedText.length; i++) {
-            ops.push({
-                type: "insert",
-                char: insertedText[i],
-                index: prefix + i,
-            })
-        }
-
-        return ops
-    }
 
     // ═══════════════════════════════════════════════════════════════════════
     // Input handlers
@@ -870,55 +904,58 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
         const el = editorRef.current
         if (!el || !editable) return
 
-        const handleCompositionStart = () => {
-            isComposingRef.current = true
-            // Lưu text trước khi bắt đầu composition để diff sau khi kết thúc
-            compositionStartTextRef.current = editorTextRef.current
-        }
+        const flushLocalChange = () => {
+            if (isNormalizingDomRef.current) return
 
-        const handleCompositionEnd = () => {
-            isComposingRef.current = false
+            const previousText = editorTextRef.current
+            const nextText = getSerializedEditorText(el)
+            const operations = buildOpsFromTextDiff(previousText, nextText)
 
-            // Sau khi composition kết thúc, diff từ text LÚC BẮT ĐẦU composition
-            // đến text hiện tại để gửi đúng các ops (bao gồm cả delete ký tự cũ)
-            const prevText = compositionStartTextRef.current
-            const nextText = getRawText(el)
-            const ops = buildOpsFromTextDiff(prevText, nextText)
-
-            for (const op of ops) {
-                sendEditWithClock(op)
-            }
-
-            const position = getCaretPosition(el)
-            sendCursorPosition(position)
-            editorTextRef.current = nextText
-        }
-
-        // Handle all mutations (insert/delete/replace/IME) by diffing text state.
-        const handleInput = (e: Event) => {
-            const inputEvent = e as InputEvent
-
-            // Đang trong composition (gõ giữa chừng) → skip, chờ compositionend
-            if (isComposingRef.current || inputEvent.inputType === "insertCompositionText") {
-                return
-            }
-
-            const prevText = editorTextRef.current
-            const nextText = getRawText(el)
-            const ops = buildOpsFromTextDiff(prevText, nextText)
-
-            if (ops.length === 0) {
+            if (operations.length === 0) {
                 editorTextRef.current = nextText
                 return
             }
 
-            for (const op of ops) {
-                sendEditWithClock(op)
+            for (const operation of operations) {
+                if (operation.type === "insert") {
+                    console.log("INSERT OP:", operation)
+                } else {
+                    console.log("DELETE OP:", operation)
+                }
+                sendEditWithClock(operation)
             }
 
-            const position = getCaretPosition(el)
-            sendCursorPosition(position)
+            sendCursorPosition()
             editorTextRef.current = nextText
+
+            const canonicalHtml = nextText
+                .split("\n")
+                .map((line) => (line === "" ? "<div><br></div>" : `<div>${line}</div>`))
+                .join("")
+
+            if (el.innerHTML !== canonicalHtml) {
+                isNormalizingDomRef.current = true
+                renderEditorText(el, nextText)
+                isNormalizingDomRef.current = false
+            }
+        }
+
+        const handleCompositionStart = () => {
+            isComposingRef.current = true
+        }
+
+        const handleCompositionEnd = () => {
+            isComposingRef.current = false
+            flushLocalChange()
+        }
+
+        const handleInput = (event: Event) => {
+            const inputEvent = event as InputEvent
+            if (isComposingRef.current || inputEvent.inputType === "insertCompositionText") {
+                return
+            }
+
+            flushLocalChange()
         }
 
         el.addEventListener("compositionstart", handleCompositionStart)
@@ -932,45 +969,78 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
         }
     }, [editable])
 
-    // DELETE / BACKSPACE
-    const handleKeyDown = (e: React.KeyboardEvent<  HTMLDivElement>) => {
-        // Delete/backspace are handled in onInput diff to avoid duplicate ops.
-        if (e.key !== "Backspace" && e.key !== "Delete") return
-    }
-
     // Cursor move
     const handleMoveCursor = () => {
         if (!editorRef.current) return
-        const position = getCaretPosition(editorRef.current)
-        sendCursorPosition(position)
+        sendCursorPosition()
     }
 
     // ═══════════════════════════════════════════════════════════════════════
     // Remote edit handler - TẠO DOM ĐỒNG NHẤT
     // ═══════════════════════════════════════════════════════════════════════
 
-    const handleRemoteEdit = useCallback((op: Operation) => {
-        if (!editorRef.current) return
+    const handleRemoteEdit = useCallback((op: Operation, remoteUserId?: string) => {
+        if (!editorRef.current || !user) return
         const el = editorRef.current
-        const text = getRawText(el)
-        let newText = ""
 
-        if (op.type === "insert") {
-            newText = text.slice(0, op.index) + op.char + text.slice(op.index)
-        }
-        if (op.type === "delete") {
-            newText = text.slice(0, op.index) + text.slice(op.index + 1)
+        const isMine = remoteUserId === user.id
+
+        if (isMine) {
+            // ── Op của chính mình được server confirm ───────────────────────
+            // Server đã broadcast lại → dequeue khỏi pending.
+            // DOM đã đúng (mình đã apply optimistically) → không cần render lại.
+            pendingOpsRef.current.shift()
+            return
         }
 
-        // Tạo DOM đồng nhất - luôn dùng <div> wrapper
-        renderEditorText(el, newText)
-        editorTextRef.current = newText
-    }, [])
+        // ── Op của người khác ───────────────────────────────────────────────
+        // Chiến lược: undo tất cả pending của mình → apply server op → redo pending
+        // Đảm bảo server op luôn được apply trên nền text "sạch" (chưa có pending),
+        // rồi pending được tái apply với index đã transform.
+
+        // Bước 1: lấy text hiện tại (đã có pending applied)
+        let text = getSerializedEditorText(el)
+
+        // Bước 2: undo pending ops theo thứ tự ngược
+        const pending = [...pendingOpsRef.current]
+        for (let i = pending.length - 1; i >= 0; i--) {
+            const inv = invertOp(pending[i].op, text)
+            text = applyOp(text, inv)
+        }
+
+        // Bước 3: apply server op lên text sạch
+        if (op.index < -1) return // sanity
+        text = applyOp(text, op)
+
+        // Bước 4: redo pending ops, transform từng cái qua server op
+        let serverOp = op
+        const serverId = remoteUserId ?? ""
+        for (let i = 0; i < pending.length; i++) {
+            let p = pending[i].op
+            // Transform pending op qua server op (và các pending đã redo trước đó)
+            p = transformAfter(p, serverOp, pending[i].userId, serverId)
+            if (p.index !== -1) {
+                text = applyOp(text, p)
+                // Cập nhật lại op trong ref với index mới
+                pendingOpsRef.current[i] = { ...pending[i], op: p }
+                // serverOp tiếp theo cần transform qua p đã redo
+                serverOp = p
+            } else {
+                // pending này thành no-op → xóa khỏi queue
+                pendingOpsRef.current.splice(i, 1)
+            }
+        }
+
+        // Bước 5: render kết quả cuối
+        renderEditorText(el, text)
+        editorTextRef.current = text
+    }, [user])
 
     useEffect(() => {
         if (!handleRemoteEditRef) return
         handleRemoteEditRef.current = handleRemoteEdit
     }, [handleRemoteEditRef, handleRemoteEdit])
+
 
     // ═══════════════════════════════════════════════════════════════════════
     // Render
@@ -984,7 +1054,6 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
                     contentEditable={editable}
                     suppressContentEditableWarning
                     spellCheck={false}
-                    onKeyDown={handleKeyDown}
                     onKeyUp={handleMoveCursor}
                     onClick={handleMoveCursor}
                     className={`

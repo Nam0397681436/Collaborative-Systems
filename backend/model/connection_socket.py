@@ -62,13 +62,23 @@ class ConnectionManager:
             self.active_users[doc_id][user_id]["role"] = new_role
     
     def create_random_color(self, seed: str) -> str:
-        """Tạo màu ngẫu nhiên dựa trên một chuỗi seed (ví dụ: user_id)"""
-        import random
-        random.seed(seed)
-        r = random.randint(0, 255)
-        g = random.randint(0, 255)
-        b = random.randint(0, 255)
-        return f"#{r:02x}{g:02x}{b:02x}"
+        """Tạo màu ổn định từ seed, tối vừa đủ để chữ trắng dễ đọc."""
+        import colorsys
+        import hashlib
+
+        digest = hashlib.sha256(seed.encode("utf-8")).digest()
+
+        hue = int.from_bytes(digest[:2], "big") / 65535.0
+        saturation = 0.65 + (digest[2] / 255.0) * 0.2
+        lightness = 0.35 + (digest[3] / 255.0) * 0.08
+
+        red, green, blue = colorsys.hls_to_rgb(hue, lightness, saturation)
+
+        return "#{:02x}{:02x}{:02x}".format(
+            int(red * 255),
+            int(green * 255),
+            int(blue * 255),
+        )
     
     async def broadcast_to_room(self, doc_id: str, message: dict):
         """Gửi tin nhắn cho tất cả mọi người trong một phòng (room)"""
