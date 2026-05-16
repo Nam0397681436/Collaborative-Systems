@@ -49,7 +49,7 @@ async def websocket_endpoint(websocket: WebSocket, doc_id: str, user_id: str):
             elif msg_type == "EDIT":
                 payload={
                     "type": "EDIT",
-                    "id": doc_id,
+                    "doc_id": doc_id,
                     "user_id":user_id,
                     "op": data.get("op"), # Ví dụ: {type: 'insert', char: 'A', index: 10}
                     "version":data.get("version",None),

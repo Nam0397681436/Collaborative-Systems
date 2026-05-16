@@ -25,7 +25,10 @@ class OTWorker:
         """
         async with message.process(requeue=True):
             payload = json.loads(message.body.decode())
-            doc_id = payload.get("id")
+            # payload: {"type": "EDIT", "id": "...", "user_id": "...", "op": {...}, "v_clock": {...}}
+            msg_type = payload.get("type")
+            # Ở websocket.py hiện đang gửi field name là "id", không phải "doc_id"
+            doc_id = payload.get("id") or payload.get("doc_id")
             user_id = payload.get("user_id")
             op_data = payload.get("op", {})
             client_v_clock = payload.get("v_clock", {})
@@ -39,7 +42,7 @@ class OTWorker:
             try:
                 op = TypeAdapter(OpPayload).validate_python(op_data)
             except Exception as e:
-                logger.error(f"Invalid operation format: {e}")
+                logger.error(f"Invalid operation format: {e} | op_data: {op_data}")
                 return
                 
             # 2. Causality Check & Transform
@@ -64,8 +67,19 @@ class OTWorker:
             saved_op = await OperationRepository.save_operation_and_update_clock(op, doc_id, user_id)
             
             # 4. Broadcast via RabbitMQ Fanout (Sử dụng producer đã được inject)
+            # Giữ nguyên toàn bộ dữ liệu gốc của message (type, id, version, v_clock...)
+            broadcast_payload = {**payload}
+            
+            # Format lại cục `op` trả về cho Frontend (Dùng "type" thay vì "op_type", loại bỏ data thừa)
+            final_op = saved_op.copy()
+            final_op["type"] = final_op.pop("op_type", "retain")
+            final_op.pop("doc_id", None)
+            final_op.pop("user_id", None)
+            final_op.pop("v_clock", None)
+            
+            broadcast_payload["op"] = final_op
             await self.producer.publish(
-                message=json.dumps(saved_op),
+                message=json.dumps(broadcast_payload),
                 exchange="broadcast_to_room",
                 routing_key="", # Fanout bỏ qua routing key
                 exchange_type="fanout",
