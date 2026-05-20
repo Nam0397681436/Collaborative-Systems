@@ -1032,8 +1032,18 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
     }, [editable])
 
     // Cursor move
-    const handleMoveCursor = () => {
+    const handleMoveCursor = (
+        event?: React.KeyboardEvent<HTMLDivElement> | React.MouseEvent<HTMLDivElement>
+    ) => {
         if (!editorRef.current) return
+
+        if (event && "key" in event) {
+            const isPrintableKey = event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey
+            if (isPrintableKey) {
+                return
+            }
+        }
+
         // Nếu đang trong debounce batch (text chưa gửi lên server),
         // không gửi cursor ngay — cursor sẽ được gửi cùng sendBatchOp() sau 500ms.
         // Điều này đảm bảo cursor và text luôn đến cùng lúc ở client khác.
