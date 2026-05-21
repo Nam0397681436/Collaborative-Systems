@@ -10,6 +10,7 @@ from app.api.auth import router as auth_router
 from app.api.document import router as document_router
 
 from infra.mongodb.database import connect_to_mongodb, close_mongodb_connection
+from infra.redis.redis_client import RedisClient
 from infra.rabbitmq.rabbit_mq_gateway import (
     connect_to_rabbitmq,
     close_rabbitmq_connection,
@@ -23,6 +24,7 @@ async def lifespan(app: FastAPI):
     # Khởi chạy khi FastAPI start
     await connect_to_mongodb()
     await connect_to_rabbitmq()
+    await RedisClient.connect()
     
     app.state.broadcast_task = asyncio.create_task(listen_for_broadcast())
     
