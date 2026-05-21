@@ -46,17 +46,23 @@ class OperationRepository:
         return ops
 
     @staticmethod
-    async def save_operation_and_update_clock(op: OpPayload, doc_id: str, user_id: str) -> dict:
+    async def save_transaction_and_update_clock(ops: List[OpPayload], doc_id: str, user_id: str, v_clock: dict) -> dict:
         """
-        Lưu thao tác vào bảng operation_logs và tăng Vector Clock của Document sử dụng $inc (Atomic).
+        Lưu một Transaction (mảng các thao tác đã bị cắt xén) vào bảng operation_logs.
+        Tăng Vector Clock của Document sử dụng $inc (Atomic) 1 lần duy nhất.
         Đồng thời đẩy vào Redis Cache.
         """
         db = get_db()
-        op_dict = op.model_dump()
-        op_dict["server_timestamp"] = datetime.utcnow()
+        transaction_doc = {
+            "doc_id": doc_id,
+            "user_id": user_id,
+            "v_clock": v_clock,
+            "ops": [op.model_dump() for op in ops],
+            "server_timestamp": datetime.utcnow()
+        }
         
         # Lưu vào MongoDB
-        await db["operation_logs"].insert_one(op_dict)
+        await db["operation_logs"].insert_one(transaction_doc)
         
         # Atomic update Vector Clock
         await db["documents"].update_one(
@@ -68,11 +74,11 @@ class OperationRepository:
         redis_client = RedisClient.get_client()
         cache_key = f"doc_history:{doc_id}"
         
-        # Đổi datetime thành string trước khi JSON serialize
-        op_dict["_id"] = str(op_dict["_id"])
-        op_dict["server_timestamp"] = str(op_dict["server_timestamp"])
+        # Đổi type trước khi JSON serialize
+        transaction_doc["_id"] = str(transaction_doc["_id"])
+        transaction_doc["server_timestamp"] = str(transaction_doc["server_timestamp"])
         
-        await redis_client.lpush(cache_key, json.dumps(op_dict))
+        await redis_client.lpush(cache_key, json.dumps(transaction_doc))
         await redis_client.ltrim(cache_key, 0, 99)
         
-        return op_dict
+        return transaction_doc

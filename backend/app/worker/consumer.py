@@ -8,7 +8,7 @@ from infra.mongodb.database import connect_to_mongodb, close_mongodb_connection
 from infra.rabbitmq.rabbit_mq_gateway import RabbitMQProducer, connect_to_rabbitmq, get_consumer_channel, close_rabbitmq_connection
 from infra.mongodb.repository.operation_repo import OperationRepository
 from app.models.ot_operation import OpPayload, RetainOperation
-from app.core.operation_transform import transform
+from app.core.operation_transform import process_concurrent_operations
 from infra.redis.redis_client import RedisClient
 
 logger = logging.getLogger(__name__)
@@ -46,38 +46,51 @@ class OTWorker:
                 return
                 
             # 2. Causality Check & Transform
-            history_ops = await OperationRepository.get_recent_history(doc_id)
-            history_ops.reverse()
+            history_ops_data = await OperationRepository.get_recent_history(doc_id)
+            history_ops_data.reverse()
             
-            for hist_op in history_ops:
-                hist_user = hist_op.get("user_id")
-                hist_version = hist_op.get("v_clock", {}).get(hist_user, 0)
-                client_version_for_hist_user = client_v_clock.get(hist_user, 0)
-                
-                if hist_version > client_version_for_hist_user:
-                    hist_op_type = hist_op.get("op_type", hist_op.get("type", "retain"))
-                    hist_op_data = {**hist_op, "op_type": hist_op_type}
+            history_ops_ascending = []
+            for item in history_ops_data:
+                # Nếu là Transaction (có mảng ops) - String-wise OT
+                if "ops" in item:
+                    for hist_op in item["ops"]:
+                        hist_op["op_type"] = hist_op.get("type", hist_op.get("op_type", "retain"))
+                        try:
+                            parsed = TypeAdapter(OpPayload).validate_python(hist_op)
+                            history_ops_ascending.append(parsed)
+                        except Exception as e:
+                            logger.warning(f"Could not parse history op: {e}")
+                # Tương thích ngược cho dữ liệu cũ (Character-wise OT)
+                else:
+                    item["op_type"] = item.get("type", item.get("op_type", "retain"))
                     try:
-                        parsed_hist_op = TypeAdapter(OpPayload).validate_python(hist_op_data)
-                        op = transform(op, parsed_hist_op)
+                        parsed = TypeAdapter(OpPayload).validate_python(item)
+                        history_ops_ascending.append(parsed)
                     except Exception as e:
-                        logger.warning(f"Could not parse history op for transform: {e}")
+                        logger.warning(f"Could not parse history op: {e}")
+                        
+            # Gọi Pipeline xử lý OT String-wise
+            ops_new = process_concurrent_operations(op, history_ops_ascending)
                         
             # 3. Save to DB (Atomic) and Cache
-            saved_op = await OperationRepository.save_operation_and_update_clock(op, doc_id, user_id)
+            await OperationRepository.save_transaction_and_update_clock(ops_new, doc_id, user_id, client_v_clock)
             
-            # 4. Broadcast via RabbitMQ Fanout (Sử dụng producer đã được inject)
-            # Giữ nguyên toàn bộ dữ liệu gốc của message (type, id, version, v_clock...)
+            # 4. Broadcast via RabbitMQ Fanout
             broadcast_payload = {**payload}
             
-            # Format lại cục `op` trả về cho Frontend (Dùng "type" thay vì "op_type", loại bỏ data thừa)
-            final_op = saved_op.copy()
-            final_op["type"] = final_op.pop("op_type", "retain")
-            final_op.pop("doc_id", None)
-            final_op.pop("user_id", None)
-            final_op.pop("v_clock", None)
+            # Format lại mảng `ops` trả về cho Frontend
+            final_ops = []
+            for saved_op in ops_new:
+                final_op = saved_op.model_dump()
+                final_op["type"] = final_op.pop("op_type", "retain")
+                final_op.pop("doc_id", None)
+                final_op.pop("user_id", None)
+                final_op.pop("v_clock", None)
+                final_ops.append(final_op)
+                
+            broadcast_payload["ops"] = final_ops
+            broadcast_payload.pop("op", None) # Xóa format cũ
             
-            broadcast_payload["op"] = final_op
             await self.producer.publish(
                 message=json.dumps(broadcast_payload),
                 exchange="broadcast_to_room",
@@ -85,8 +98,7 @@ class OTWorker:
                 exchange_type="fanout",
                 durable=False
             )
-            logger.info(f"Processed & Broadcasted OT for Doc: {doc_id} by User: {user_id} via RabbitMQ")
-
+            logger.info(f"Processed & Broadcasted OT for Doc: {doc_id} by User: {user_id} via RabbitMQ (Splitted into {len(ops_new)} ops)")
 
 async def main():
     logger.info("Initializing OT Worker dependencies...")
