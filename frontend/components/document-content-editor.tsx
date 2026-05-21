@@ -13,13 +13,14 @@ interface DocumentContentEditorProps {
     setCurrentClock: React.Dispatch<React.SetStateAction<number>>
     vectorClock: VectorClock
     setVectorClock: React.Dispatch<React.SetStateAction<VectorClock>>
-    handleRemoteEditRef?: React.MutableRefObject<(op: Operation, remoteUserId?: string) => void>
+    handleRemoteEditRef?: React.MutableRefObject<(ops: Operation[], remoteUserId?: string) => void>
 }
 
 export type Operation = {
     type: "insert" | "delete"
     char: string
     index: number
+    opId?: string
 }
 
 export type Cursor = {
@@ -84,10 +85,15 @@ const renderEditorText = (el: HTMLElement, text: string) => {
     }).join('')
 }
 
+// ─── Unique ID generator ───────────────────────────────────────────────────
+
+let opIdCounter = 0
+const generateOpId = (): string => {
+    return `op_${Date.now()}_${++opIdCounter}_${Math.random().toString(36).slice(2, 8)}`
+}
+
 // ─── OT: Text helpers ────────────────────────────────────────────────────────
 
-// Apply một op lên chuỗi text thuần
-// op.char có thể là chuỗi nhiều ký tự (batch mode)
 function applyOp(text: string, op: Operation): string {
     if (op.type === "insert") {
         const i = Math.max(0, Math.min(op.index, text.length))
@@ -101,26 +107,20 @@ function applyOp(text: string, op: Operation): string {
     return text
 }
 
-// Inverse của một op (để undo)
 function invertOp(op: Operation, text: string): Operation {
     if (op.type === "insert") {
-        // undo insert → delete tại đúng index đó
         return { type: "delete", char: op.char, index: op.index }
     }
-    // undo delete → insert lại ký tự đó
     return { type: "insert", char: op.char, index: op.index }
 }
 
 // Transform op `b` dựa trên op `a` đã được apply trước
-// Dùng để tái apply pending ops sau khi đã insert server op
-// op.char có thể là chuỗi nhiều ký tự → shift theo char.length
 function transformAfter(b: Operation, a: Operation, bUserId: string, aUserId: string): Operation {
     const aLen = a.char.length
 
     if (a.type === "insert" && b.type === "insert") {
         if (a.index < b.index) return { ...b, index: b.index + aLen }
         if (a.index === b.index) {
-            // tie-break: user_id nhỏ hơn thắng (chèn trước) → b bị đẩy phải
             return aUserId <= bUserId ? { ...b, index: b.index + aLen } : b
         }
         return b
@@ -128,7 +128,7 @@ function transformAfter(b: Operation, a: Operation, bUserId: string, aUserId: st
     if (a.type === "delete" && b.type === "insert") {
         const aEnd = a.index + aLen
         if (aEnd <= b.index) return { ...b, index: b.index - aLen }
-        if (a.index < b.index) return { ...b, index: a.index } // b bị nuốt vào vùng xóa → về đầu vùng
+        if (a.index < b.index) return { ...b, index: a.index }
         return b
     }
     if (a.type === "insert" && b.type === "delete") {
@@ -137,17 +137,53 @@ function transformAfter(b: Operation, a: Operation, bUserId: string, aUserId: st
     }
     if (a.type === "delete" && b.type === "delete") {
         const aEnd = a.index + aLen
+        const bEnd = b.index + b.char.length
+
         if (aEnd <= b.index) return { ...b, index: b.index - aLen }
-        if (a.index >= b.index + b.char.length) return b // a sau b, không ảnh hưởng
-        // b.index nằm trong vùng xóa của a → no-op
-        if (a.index <= b.index && b.index < aEnd) return { ...b, index: -1 }
+        if (a.index >= bEnd) return b
+        if (a.index <= b.index && bEnd <= aEnd) return { ...b, index: -1 }
+
+        if (b.index <= a.index && aEnd <= bEnd) {
+            const beforeA = a.index - b.index
+            const afterA = bEnd - aEnd
+            const newChar = b.char.slice(0, beforeA) + b.char.slice(b.char.length - afterA)
+            return { ...b, char: newChar, index: b.index }
+        }
+
+        if (a.index < b.index && aEnd > b.index && aEnd < bEnd) {
+            const overlapLen = aEnd - b.index
+            const newChar = b.char.slice(overlapLen)
+            return { ...b, char: newChar, index: a.index }
+        }
+
+        if (a.index > b.index && a.index < bEnd && aEnd > bEnd) {
+            const overlapLen = bEnd - a.index
+            const newChar = b.char.slice(0, b.char.length - overlapLen)
+            return { ...b, char: newChar, index: b.index }
+        }
+
         return b
     }
     return b
 }
 
-// Tạo tối đa 2 ops từ diff: 1 delete batch + 1 insert batch
-// Thay vì N ops đơn lẻ, trả về op duy nhất với char là chuỗi
+// Transform một mảng ops qua một op đã apply
+function transformOpsArray(ops: Operation[], a: Operation, bUserId: string, aUserId: string): Operation[] {
+    return ops.map(op => {
+        if (op.index === -1) return op
+        return transformAfter(op, a, bUserId, aUserId)
+    }).filter(op => op.index !== -1)
+}
+
+// Transform một mảng ops qua một mảng ops khác
+function transformOpsArrayByArray(ops: Operation[], serverOps: Operation[], bUserId: string, aUserId: string): Operation[] {
+    let result = [...ops]
+    for (const serverOp of serverOps) {
+        result = transformOpsArray(result, serverOp, bUserId, aUserId)
+    }
+    return result
+}
+
 function buildOpsFromTextDiff(prevText: string, nextText: string): Operation[] {
     if (prevText === nextText) return []
 
@@ -168,21 +204,21 @@ function buildOpsFromTextDiff(prevText: string, nextText: string): Operation[] {
     const insertedText = nextText.slice(prefix, nextSuffix + 1)
     const operations: Operation[] = []
 
-    // Một delete op duy nhất cho toàn bộ chuỗi bị xóa
     if (deletedText.length > 0) {
         operations.push({
             type: "delete",
             char: deletedText,
             index: prefix,
+            opId: generateOpId(),
         })
     }
 
-    // Một insert op duy nhất cho toàn bộ chuỗi được chèn
     if (insertedText.length > 0) {
         operations.push({
             type: "insert",
             char: insertedText,
             index: prefix,
+            opId: generateOpId(),
         })
     }
 
@@ -210,14 +246,11 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
     const editorTextRef = useRef("")
     const isNormalizingDomRef = useRef(false)
 
-    // ── OT: pending ops đã gửi lên server nhưng chưa được ack ────────────────
-    // Mỗi entry gồm op + user_id của mình để dùng tie-breaking
-    const pendingOpsRef = useRef<Array<{ op: Operation; userId: string }>>([])
+    const pendingOpsRef = useRef<Array<{ op: Operation; userId: string; opId: string }>>([])
     const isComposingRef = useRef(false)
+    const compositionDataRef = useRef<{ text: string; startIndex: number } | null>(null)
 
-    // ── Debounce: gộp nhiều keystroke thành một batch op sau 500ms ───────────
     const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-    // Text đã "snapshot" tại thời điểm bắt đầu batch (trước khi người dùng bắt đầu gõ chuỗi hiện tại)
     const batchBaseTextRef = useRef<string | null>(null)
 
     useEffect(() => {
@@ -234,8 +267,7 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
 
     useEffect(() => {
         if (!editorRef.current) return
-        
-        // Tạo DOM đồng nhất từ initialContent
+
         renderEditorText(editorRef.current, initialContent)
         editorTextRef.current = initialContent
     }, [initialContent])
@@ -252,7 +284,6 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
         const targetNode = caretRange.startContainer
         const targetOffset = caretRange.startOffset
 
-        // Thu thập leaves - xử lý cả <div> và <br> trực tiếp
         const leaves: Array<
             | { type: 'text'; node: Text; len: number }
             | { type: 'empty'; element: HTMLElement; br: HTMLElement }
@@ -287,9 +318,8 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
             } else if (node.nodeName === 'BR') {
                 const br = node as HTMLElement
                 const parent = br.parentElement
-                
+
                 if (parent && isEmptyLine(parent)) {
-                    // <br> trong <div><br></div>
                     if (!leaves.find(l => l.type === 'empty' && l.element === parent)) {
                         leaves.push({
                             type: 'empty',
@@ -298,7 +328,6 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
                         })
                     }
                 } else {
-                    // <br> trực tiếp
                     leaves.push({
                         type: 'br-standalone',
                         br
@@ -459,7 +488,7 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
             } else if (node.nodeName === 'BR') {
                 const br = node as HTMLElement
                 const parent = br.parentElement
-                
+
                 if (parent && isEmptyLine(parent)) {
                     if (!leaves.find(l => l.type === 'empty' && l.element === parent)) {
                         leaves.push({
@@ -506,8 +535,6 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
 
                     if (currentParent !== nextParent) {
                         if (pos === targetIndex) {
-                            // Cursor ở cuối dòng → trả về cuối node hiện tại,
-                            // KHÔNG nhảy sang đầu dòng dưới
                             return {
                                 type: 'text',
                                 node,
@@ -718,7 +745,7 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
 
         if (result.type === 'br-standalone') {
             const brRect = result.br.getBoundingClientRect()
-            
+
             if (brRect.height > 0) {
                 return {
                     left: brRect.left,
@@ -727,8 +754,7 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
                     width: brRect.width || 2
                 }
             }
-            
-            // Fallback: dùng rect của parent hoặc vị trí ước tính
+
             const parent = result.br.parentElement
             if (parent) {
                 const rect = parent.getBoundingClientRect()
@@ -842,7 +868,6 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
                 startHideTimer()
             })
 
-            // Auto-hide sau 2 giây khi render
             startHideTimer()
 
             cursorContainer.appendChild(line)
@@ -881,16 +906,17 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
 
         const newClock = currentClockRef.current + 1
         const newVectorClock = { ...vectorClockRef.current, [user.id]: newClock }
+        const opId = op.opId || generateOpId()
+        const opWithId = { ...op, opId }
 
         currentClockRef.current = newClock
         vectorClockRef.current = newVectorClock
         setCurrentClock(newClock)
         setVectorClock(newVectorClock)
 
-        // Track op này là "pending" — đã apply local nhưng server chưa broadcast lại
-        pendingOpsRef.current.push({ op, userId: user.id })
+        pendingOpsRef.current.push({ op: opWithId, userId: user.id, opId })
 
-        socket.send(JSON.stringify({ type: "EDIT", op, v_clock: newVectorClock }))
+        socket.send(JSON.stringify({ type: "EDIT", op: opWithId, v_clock: newVectorClock }))
     }
 
     const sendCursorPosition = () => {
@@ -912,30 +938,40 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // Raw text
-    // ═══════════════════════════════════════════════════════════════════════
-
-    // ═══════════════════════════════════════════════════════════════════════
     // Input handlers
     // ═══════════════════════════════════════════════════════════════════════
+
+    const flushCompositionIfNeeded = useCallback(() => {
+        if (!isComposingRef.current || !editorRef.current) return
+
+        const el = editorRef.current
+        isComposingRef.current = false
+        compositionDataRef.current = null
+
+        const currentText = getSerializedEditorText(el)
+        editorTextRef.current = currentText
+
+        if (debounceTimerRef.current !== null) {
+            clearTimeout(debounceTimerRef.current)
+            debounceTimerRef.current = null
+        }
+
+        batchBaseTextRef.current = null
+    }, [])
 
     useEffect(() => {
         const el = editorRef.current
         if (!el || !editable) return
 
-        // ── Hàm thực sự gửi batch op lên server ───────────────────────────────
-        // Được gọi sau khi debounce timer hết hạn (500ms không gõ)
         const sendBatchOp = () => {
             if (isNormalizingDomRef.current) return
 
-            // baseText = text tại thời điểm bắt đầu batch
             const baseText = batchBaseTextRef.current
-            if (baseText === null) return // không có gì để flush
+            if (baseText === null) return
 
             const currentText = getSerializedEditorText(el)
             const operations = buildOpsFromTextDiff(baseText, currentText)
 
-            // Reset batch state
             batchBaseTextRef.current = null
 
             if (operations.length === 0) return
@@ -951,7 +987,6 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
 
             sendCursorPosition()
 
-            // Normalize DOM sau batch
             const canonicalHtml = currentText
                 .split("\n")
                 .map((line) => (line === "" ? "<div><br></div>" : `<div>${line}</div>`))
@@ -964,62 +999,81 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
             }
         }
 
-        // ── Đặt lịch flush, hủy lịch cũ nếu có (debounce 500ms) ──────────────
         const scheduleBatch = () => {
             if (isNormalizingDomRef.current) return
 
             const currentText = getSerializedEditorText(el)
 
-            // Lần đầu tiên gõ trong batch mới → snapshot base text
             if (batchBaseTextRef.current === null) {
                 batchBaseTextRef.current = editorTextRef.current
             }
 
-            // Luôn cập nhật editorTextRef để lần diff tiếp theo chính xác
             editorTextRef.current = currentText
 
-            // Reset debounce timer
             if (debounceTimerRef.current !== null) {
                 clearTimeout(debounceTimerRef.current)
             }
             debounceTimerRef.current = setTimeout(() => {
                 debounceTimerRef.current = null
                 sendBatchOp()
-            }, 500)
+            }, 300)
         }
 
-        const handleCompositionStart = () => {
+        const handleCompositionStart = (e: CompositionEvent) => {
             isComposingRef.current = true
+            const editor = editorRef.current
+            if (editor) {
+                const index = getCaretOffset(editor)
+                compositionDataRef.current = {
+                    text: getSerializedEditorText(editor),
+                    startIndex: index
+                }
+            }
         }
 
-        const handleCompositionEnd = () => {
+        const handleCompositionEnd = (e: CompositionEvent) => {
             isComposingRef.current = false
-            // Flush ngay sau composition kết thúc — lúc này DOM đã có ký tự hoàn chỉnh (ví dụ 'â')
-            // Vẫn debounce để gộp với ký tự tiếp theo nếu người dùng gõ tiếp liền ngay
+            compositionDataRef.current = null
             scheduleBatch()
         }
 
         const handleInput = (event: Event) => {
             const inputEvent = event as InputEvent
             if (isComposingRef.current || inputEvent.inputType === "insertCompositionText") {
-                // Đang compose (IME tiếng Việt/Nhật/...) → chưa flush
                 return
             }
 
-            // Dùng setTimeout(0) để đợi browser fire compositionstart (nếu có) trước khi schedule.
-            // Ngăn việc gửi ký tự dở ('a') trước khi IME ghép xong ('â').
             setTimeout(() => {
                 if (isComposingRef.current) return
                 scheduleBatch()
             }, 0)
         }
 
+        const handleBlur = () => {
+            if (debounceTimerRef.current !== null) {
+                clearTimeout(debounceTimerRef.current)
+                debounceTimerRef.current = null
+                sendBatchOp()
+            }
+        }
+
+        const handleBeforeInput = (e: InputEvent) => {
+            if (e.inputType === 'insertFromPaste' || e.inputType === 'deleteByCut') {
+                if (debounceTimerRef.current !== null) {
+                    clearTimeout(debounceTimerRef.current)
+                    debounceTimerRef.current = null
+                    sendBatchOp()
+                }
+            }
+        }
+
         el.addEventListener("compositionstart", handleCompositionStart)
         el.addEventListener("compositionend", handleCompositionEnd)
         el.addEventListener("input", handleInput)
+        el.addEventListener("blur", handleBlur)
+        el.addEventListener("beforeinput", handleBeforeInput)
 
         return () => {
-            // Flush pending batch khi unmount
             if (debounceTimerRef.current !== null) {
                 clearTimeout(debounceTimerRef.current)
                 debounceTimerRef.current = null
@@ -1028,6 +1082,8 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
             el.removeEventListener("compositionstart", handleCompositionStart)
             el.removeEventListener("compositionend", handleCompositionEnd)
             el.removeEventListener("input", handleInput)
+            el.removeEventListener("blur", handleBlur)
+            el.removeEventListener("beforeinput", handleBeforeInput)
         }
     }, [editable])
 
@@ -1044,71 +1100,79 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
             }
         }
 
-        // Nếu đang trong debounce batch (text chưa gửi lên server),
-        // không gửi cursor ngay — cursor sẽ được gửi cùng sendBatchOp() sau 500ms.
-        // Điều này đảm bảo cursor và text luôn đến cùng lúc ở client khác.
         if (debounceTimerRef.current !== null) return
         sendCursorPosition()
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // Remote edit handler - TẠO DOM ĐỒNG NHẤT
+    // Remote edit handler - Xử lý mảng ops
     // ═══════════════════════════════════════════════════════════════════════
 
-    const handleRemoteEdit = useCallback((op: Operation, remoteUserId?: string) => {
+    const handleRemoteEdit = useCallback((ops: Operation[], remoteUserId?: string) => {
         if (!editorRef.current || !user) return
         const el = editorRef.current
 
         const isMine = remoteUserId === user.id
 
+        // ── Self-ops: dequeue tất cả ops trong mảng ───────────────────────
         if (isMine) {
-            // ── Op của chính mình được server confirm ───────────────────────
-            // Server đã broadcast lại → dequeue khỏi pending.
-            // DOM đã đúng (mình đã apply optimistically) → không cần render lại.
-            pendingOpsRef.current.shift()
+            for (const op of ops) {
+                if (op.opId) {
+                    const pendingIndex = pendingOpsRef.current.findIndex(p => p.opId === op.opId)
+                    if (pendingIndex !== -1) {
+                        pendingOpsRef.current.splice(pendingIndex, 1)
+                    }
+                } else {
+                    if (pendingOpsRef.current.length > 0 && pendingOpsRef.current[0].userId === user.id) {
+                        pendingOpsRef.current.shift()
+                    }
+                }
+            }
             return
         }
 
         // ── Op của người khác ───────────────────────────────────────────────
-        // Chiến lược: undo tất cả pending của mình → apply server op → redo pending
-        // Đảm bảo server op luôn được apply trên nền text "sạch" (chưa có pending),
-        // rồi pending được tái apply với index đã transform.
+        if (isComposingRef.current) {
+            flushCompositionIfNeeded()
+        }
 
-        // Lưu vị trí caret hiện tại của local user để khôi phục sau khi render
         const localCaretBefore = getCaretOffset(el)
 
-        // Bước 1: lấy text hiện tại (đã có pending applied)
+        // Bước 1: lấy text hiện tại
         let text = getSerializedEditorText(el)
 
-        // Bước 2: undo pending ops theo thứ tự ngược
+        // Bước 2: undo tất cả pending ops theo thứ tự ngược
         const pending = [...pendingOpsRef.current]
         for (let i = pending.length - 1; i >= 0; i--) {
             const inv = invertOp(pending[i].op, text)
             text = applyOp(text, inv)
         }
 
-        // Bước 3: apply server op lên text sạch
-        if (op.index < -1) return // sanity
-        text = applyOp(text, op)
+        // Bước 3: apply TẤT CẢ server ops lên text sạch
+        for (const op of ops) {
+            if (op.index < -1) continue
+            text = applyOp(text, op)
+        }
 
-        // Bước 4: redo pending ops, transform từng cái qua server op
-        let serverOp = op
+        // Bước 4: redo pending ops, transform qua TẤT CẢ server ops
         const serverId = remoteUserId ?? ""
-        for (let i = 0; i < pending.length; i++) {
-            let p = pending[i].op
-            // Transform pending op qua server op (và các pending đã redo trước đó)
-            p = transformAfter(p, serverOp, pending[i].userId, serverId)
+        let transformedPending = pending.map(p => p.op)
+
+        for (const serverOp of ops) {
+            transformedPending = transformOpsArray(transformedPending, serverOp, user.id, serverId)
+        }
+
+        // Apply các pending đã transform và build new pending array
+        const newPendingOps: typeof pendingOpsRef.current = []
+        for (let i = 0; i < transformedPending.length; i++) {
+            const p = transformedPending[i]
             if (p.index !== -1) {
                 text = applyOp(text, p)
-                // Cập nhật lại op trong ref với index mới
-                pendingOpsRef.current[i] = { ...pending[i], op: p }
-                // serverOp tiếp theo cần transform qua p đã redo
-                serverOp = p
-            } else {
-                // pending này thành no-op → xóa khỏi queue
-                pendingOpsRef.current.splice(i, 1)
+                newPendingOps.push({ ...pending[i], op: p })
             }
         }
+
+        pendingOpsRef.current = newPendingOps
 
         // Bước 5: render kết quả cuối
         isNormalizingDomRef.current = true
@@ -1116,26 +1180,31 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
         isNormalizingDomRef.current = false
         editorTextRef.current = text
 
-        // Bước 6: khôi phục caret của local user, điều chỉnh theo server op
-        // op.char có thể là chuỗi → shift theo char.length
-        const opLen = op.char.length
-        let restoredCaret = localCaretBefore
-        if (op.type === "insert") {
-            // insert tại vị trí <= caret → caret dịch phải opLen
-            if (op.index <= localCaretBefore) restoredCaret += opLen
-        } else if (op.type === "delete") {
-            const opEnd = op.index + opLen
-            if (opEnd <= localCaretBefore) {
-                // toàn bộ chuỗi xóa nằm trước caret → caret dịch trái opLen
-                restoredCaret -= opLen
-            } else if (op.index < localCaretBefore) {
-                // caret nằm trong vùng xóa → đặt caret về đầu vùng xóa
-                restoredCaret = op.index
-            }
-            // op.index >= localCaretBefore → xóa sau caret, không ảnh hưởng
+        // Cập nhật batchBaseTextRef nếu đang trong batch
+        if (batchBaseTextRef.current !== null) {
+            batchBaseTextRef.current = text
         }
 
-        // Đặt lại caret vào đúng vị trí
+        // Bước 6: khôi phục caret của local user, điều chỉnh theo TẤT CẢ server ops
+        let restoredCaret = localCaretBefore
+        for (const op of ops) {
+            const opLen = op.char.length
+            if (op.type === "insert") {
+                if (op.index <= restoredCaret) {
+                    restoredCaret += opLen
+                }
+            } else if (op.type === "delete") {
+                const opEnd = op.index + opLen
+                if (opEnd <= restoredCaret) {
+                    restoredCaret -= opLen
+                } else if (op.index < restoredCaret) {
+                    restoredCaret = op.index
+                }
+            }
+        }
+
+        restoredCaret = Math.max(0, Math.min(restoredCaret, text.length))
+
         const result = indexToNodeOffset(el, restoredCaret)
         if (result) {
             const selection = window.getSelection()
@@ -1149,7 +1218,6 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
                     } else if (result.type === 'br-standalone') {
                         range.setStart(result.br, 0)
                     } else {
-                        // end-of-document: đặt sau node cuối
                         range.selectNodeContents(el)
                         range.collapse(false)
                     }
@@ -1161,7 +1229,7 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
                 }
             }
         }
-    }, [user, indexToNodeOffset])
+    }, [user, indexToNodeOffset, flushCompositionIfNeeded])
 
     useEffect(() => {
         if (!handleRemoteEditRef) return

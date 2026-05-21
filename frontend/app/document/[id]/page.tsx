@@ -94,7 +94,7 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
   const titleDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const socketRef = useRef<WebSocket | null>(null)
 
-  const handleRemoteEditRef = useRef<(op: Operation, remoteUserId?: string) => void>(() => { })
+  const handleRemoteEditRef = useRef<(ops: Operation[], remoteUserId?: string) => void>(() => { })
   // const handleRenderCursorRef = useRef<(cursors: Cursor[]) => void>(() => { })
 
   // ── Fetch document ────────────────────────────────────────────────────────
@@ -166,6 +166,7 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
           online_users?: any[]
           new_role?: string
           op?: Operation
+          ops?: Operation[]
           v_clock?: VectorClock
           left?: number
           top?: number
@@ -230,12 +231,13 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
         }
 
         if (message.type === "EDIT") {
-          const { op, v_clock } = message as { op?: Operation; v_clock?: VectorClock }
-          if (!op || !v_clock) return
+          const { op, ops, v_clock } = message as { op?: Operation; ops?: Operation[]; v_clock?: VectorClock }
+          const editOps = ops ?? (op ? [op] : [])
+          if (editOps.length === 0 || !v_clock) return
           setVectorClock(v_clock)
           setCurrentClock(Math.max(...Object.values(v_clock ?? {}), currentClock))
           try {
-            handleRemoteEditRef.current?.(op, message.user_id)
+            handleRemoteEditRef.current?.(editOps, message.user_id)
           } catch (handlerErr) {
           }
         }
