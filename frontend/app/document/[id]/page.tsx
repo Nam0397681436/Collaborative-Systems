@@ -72,6 +72,20 @@ function toSidebarUser(c: Collaborator, color: string, idx: number, isOnline: bo
   }
 }
 
+function mergeVectorClock(base: VectorClock, incoming?: VectorClock): VectorClock {
+  const merged: VectorClock = { ...base }
+
+  if (!incoming) {
+    return merged
+  }
+
+  for (const [userId, clock] of Object.entries(incoming)) {
+    merged[userId] = Math.max(merged[userId] ?? 0, clock ?? 0)
+  }
+
+  return merged
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function DocumentEditorPage({ params }: { params: Promise<{ id: string }> }) {
@@ -107,7 +121,7 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
         setDocument(res.document)
         setTitle(res.document.title ?? "")
         setVectorClock(res.document.global_v_clock ?? {})
-        setCurrentClock(Math.max(...Object.values(res.document.global_v_clock ?? {}), 0))
+        setCurrentClock(res.document.global_v_clock ? res.document.global_v_clock[user.id] || 0 : 0)
       }
     } catch (err) {
       toast.error("Không tìm thấy tài liệu hoặc bạn không có quyền truy cập")
@@ -198,7 +212,7 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
             setOnlineUsers(message.online_users || [])
             if (Object.keys(v_clock).length > 0) {
               setVectorClock(v_clock)
-              setCurrentClock(Math.max(...Object.values(v_clock), currentClock))
+              setCurrentClock(v_clock[user.id] || 0)
             }
           }
         }
@@ -239,8 +253,10 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
           const { op, ops, v_clock } = message as { op?: Operation; ops?: Operation[]; v_clock?: VectorClock }
           const editOps = ops ?? (op ? [op] : [])
           if (editOps.length === 0 || !v_clock) return
-          setVectorClock(v_clock)
-          setCurrentClock(Math.max(...Object.values(v_clock ?? {}), currentClock))
+          const mergedClock = mergeVectorClock(vectorClock, v_clock)
+          const nextClock = Math.max(currentClock, mergedClock[user.id] ?? 0) + 1
+          setCurrentClock(nextClock)
+          setVectorClock({ ...mergedClock, [user.id]: nextClock })
           try {
             handleRemoteEditRef.current?.(editOps, message.user_id)
           } catch (handlerErr) {
