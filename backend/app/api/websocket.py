@@ -2,6 +2,9 @@ import json
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from model.connection_socket import connection_manager
 from infra.rabbitmq.rabbit_mq_gateway import RabbitMQProducer, get_routing_key
+from infra.redis.redis_client import RedisClient
+from infra.mongodb.database import get_db
+from bson import ObjectId
 import logging
 logger=logging.getLogger("app.websocket")
 
@@ -15,6 +18,7 @@ async def websocket_endpoint(websocket: WebSocket, doc_id: str, user_id: str):
     await connection_manager.connect(websocket, doc_id)
 
     try:
+        redis_client = RedisClient.get_client()
         while True:
             data = await websocket.receive_json()
             msg_type= data.get("type")
@@ -22,6 +26,23 @@ async def websocket_endpoint(websocket: WebSocket, doc_id: str, user_id: str):
             if msg_type == "JOIN":
                 user = data.get("user",{})
                 connection_manager.add_user(doc_id, user)
+                
+                v_clock = {}
+                try:
+                    # Lấy phần tử mới nhất ở đầu danh sách Redis (index 0)
+                    cached_ops = await redis_client.lrange(f"doc_history:{doc_id}", 0, 0)
+                    if cached_ops:
+                        last_op = json.loads(cached_ops[0])
+                        v_clock = last_op.get("v_clock", {})
+                    else:
+                        # Fallback về MongoDB nếu cache bị rỗng (Cache Miss)
+                        db = get_db()
+                        doc = await db["documents"].find_one({"_id": ObjectId(doc_id)})
+                        if doc:
+                            v_clock = {str(k): int(v) for k, v in doc.get("global_v_clock", {}).items()}
+                except Exception as e:
+                    logger.error(f"Error getting v_clock: {e}")
+
                 await connection_manager.broadcast_to_room(
                     doc_id,
                     {
@@ -29,6 +50,7 @@ async def websocket_endpoint(websocket: WebSocket, doc_id: str, user_id: str):
                         "doc_id": doc_id,
                         "user_id": user_id,
                         "online_users": connection_manager.get_online_users(doc_id),
+                        "v_clock": v_clock,
                     },
                 )
             
@@ -75,8 +97,8 @@ async def websocket_endpoint(websocket: WebSocket, doc_id: str, user_id: str):
                     exchange="ot_exchange",
                     routing_key=routing_key
                 )
-                logger.info(f"User {user_id} sent edit operation: {data.get('op')}")
-
+                # logger.info(f"User {user_id} sent edit operation: {data.get('op')}")
+                logger.info(f"payload: {payload}\n---000---\n")
             elif msg_type == "LEAVE":
                 break
 
