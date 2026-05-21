@@ -194,7 +194,12 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
 
         if (message.type === "JOIN") {
           if (message.user_id) {
+            const v_clock = message.v_clock as VectorClock
             setOnlineUsers(message.online_users || [])
+            if (Object.keys(v_clock).length > 0) {
+              setVectorClock(v_clock)
+              setCurrentClock(Math.max(...Object.values(v_clock), currentClock))
+            }
           }
         }
 
