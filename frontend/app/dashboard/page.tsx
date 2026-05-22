@@ -38,6 +38,7 @@ import {
   ChevronDown,
   Loader2,
 } from "lucide-react"
+import { toast } from "sonner"
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -112,8 +113,14 @@ export default function DashboardPage() {
   // ── Xóa tài liệu ─────────────────────────────────────────────────────────
   const handleDelete = async (docId: string) => {
     try {
-      await deleteDocumentApi(docId, user?.id ?? "")
-      setDocuments((prev) => prev.filter((d) => d._id !== docId))
+      const res = await deleteDocumentApi(docId, user?.id ?? "")
+      if(res.success) {
+        toast.success("Đã xóa tài liệu")
+        setDocuments((prev) => prev.filter((d) => d._id !== docId))
+      }
+      else{
+        toast.error(res.message ?? "Không thể xóa tài liệu")
+      }
     } catch (err) {
       console.error("Lỗi xóa tài liệu:", err)
     }
@@ -207,14 +214,14 @@ export default function DashboardPage() {
               <FolderOpen className="w-4 h-4" />
               Tất cả tài liệu
             </Button>
-            <Button
+            {/* <Button
               variant={filter === "starred" ? "secondary" : "ghost"}
               className="w-full justify-start gap-2"
               onClick={() => setFilter("starred")}
             >
               <Star className="w-4 h-4" />
               Đã gắn sao
-            </Button>
+            </Button> */}
             <Button
               variant={filter === "shared" ? "secondary" : "ghost"}
               className="w-full justify-start gap-2"
@@ -225,12 +232,12 @@ export default function DashboardPage() {
             </Button>
           </nav>
 
-          <div className="mt-auto pt-4 border-t border-border">
+          {/* <div className="mt-auto pt-4 border-t border-border">
             <Button variant="ghost" className="w-full justify-start gap-2 text-muted-foreground">
               <Trash2 className="w-4 h-4" />
               Thùng rác
             </Button>
-          </div>
+          </div> */}
         </aside>
 
         {/* Main Content */}

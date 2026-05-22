@@ -9,9 +9,6 @@ import {
   getDocumentApi,
   updateDocumentTitleApi,
   deleteDocumentApi,
-  addCollaboratorApi,
-  removeCollaboratorApi,
-  updateCollaboratorRoleApi,
   type DocumentItem,
   type Collaborator,
   type DocumentRole,
@@ -35,30 +32,21 @@ import {
   ArrowLeft,
   Share2,
   MoreHorizontal,
-  Star,
   Download,
   History,
-  ChevronDown,
-  Bold,
-  Italic,
-  Underline,
-  List,
-  ListOrdered,
-  AlignLeft,
-  AlignCenter,
-  AlignRight,
-  Link2,
-  Image,
-  Undo,
-  Redo,
   Clock,
   Loader2,
+  ChevronUp,
 } from "lucide-react"
-import { CollaboratorsSidebar } from "@/components/collaborators-sidebar"
 import ShareDialog from "@/components/share-dialog"
 import DocumentContentEditor, { Cursor, Operation } from "@/components/document-content-editor"
 import { toast } from "sonner"
-
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover"
+import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 
 
 function toSidebarUser(c: Collaborator, color: string, idx: number, isOnline: boolean) {
@@ -98,7 +86,7 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
   const [vectorClock, setVectorClock] = useState<VectorClock>({})
   const [currentClock, setCurrentClock] = useState(0)
   const [isLoading, setIsLoading] = useState(true)
-  const [isStarred, setIsStarred] = useState(false)
+  const [showAllUsers, setShowAllUsers] = useState(false)
   const [isShareDialogOpen, setIsShareDialogOpen] = useState(false)
   const [lastSaved, setLastSaved] = useState<Date | null>(null)
   const [onlineUsers, setOnlineUsers] = useState<any[]>([])
@@ -195,7 +183,7 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
 
         console.log("Received WS message:", message)
 
-        if(message.type === "TITLE_UPDATE") {
+        if (message.type === "TITLE_UPDATE") {
           if (message.new_title) {
             setTitle(message.new_title)
             // toast.info("Tiêu đề đã được cập nhật")
@@ -421,32 +409,72 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
 
           <div className="flex items-center gap-2">
             {/* Online Users Avatars */}
-            <div className="flex items-center -space-x-2 mr-2">
-              {onlineUsers.slice(0, 3).map((u, i) => (
-                <div
-                  key={u.id}
-                  className="w-8 h-8 rounded-full border-2 border-background flex items-center justify-center text-xs font-medium text-white"
-                  style={{ backgroundColor: u.color }}
-                  title={u.username}
-                >
-                  {u.username.split(" ").map((n: string) => n[0]).join("").slice(0, 2)}
-                </div>
-              ))}
+            <div className="flex items-center space-x-1` mr-2">
+              {
+                !showAllUsers && onlineUsers.slice(0, 3).map((u, i) => (
+                  <div
+                    key={u.id}
+                    className="w-8 h-8 cursor-pointer rounded-full border-2 border-background flex items-center justify-center text-xs font-medium text-white"
+                    style={{ backgroundColor: u.color }}
+                    title={u.username}
+                  >
+                    {u.username.split(" ").map((n: string) => n[0]).join("").slice(0, 2)}
+                  </div>
+                ))
+              }
               {onlineUsers.length > 3 && (
-                <div className="w-8 h-8 rounded-full border-2 border-background bg-muted flex items-center justify-center text-xs font-medium text-muted-foreground">
-                  +{onlineUsers.length - 3}
-                </div>
+                <Popover open={showAllUsers} onOpenChange={setShowAllUsers}>
+                  <PopoverTrigger asChild>
+                    {
+                      onlineUsers.length > 1 && showAllUsers ? (
+                        <div
+                          className="w-8 h-8  cursor-pointer rounded-full border-2 border-background flex items-center justify-center text-xs font-medium bg-muted"
+                        >
+                          <ChevronUp className="w-4 h-4" />
+                        </div>
+                      ) : (
+                        <div
+                          className="w-8 h-8 cursor-pointer rounded-full border-2 border-background flex items-center justify-center text-xs font-medium bg-muted"
+                        >
+                          {`+${onlineUsers.length - 3}`}
+                        </div>
+                      )
+                    }
+                  </PopoverTrigger>
+                  <PopoverContent align="end" className="p-0">
+                    <p className="px-3 pt-3 font-bold">Trực tuyến: {onlineUsers.length}</p>
+                    <ul className="mt-2 space-y-2">
+                      {onlineUsers.map((u) => (
+                        <li className="flex items-center gap-2 hover:bg-muted px-3 py-1 rounded cursor-pointer" key={u.id}>
+                          <div
+                            key={u.id}
+                            className="w-8 h-8 cursor-pointer rounded-full border-2 border-background flex items-center justify-center text-xs font-medium text-white"
+                            style={{ backgroundColor: u.color }}
+                            title={u.username}
+                          >
+                            {u.username.split(" ").map((n: string) => n[0]).join("").slice(0, 2)}
+                          </div>
+                          <div>
+                            <p className="text-sm font-medium">{u.username}</p>
+                            <p className="text-xs text-muted-foreground">{u.email}</p>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                    <div className="p-3 pt-0"></div>
+                  </PopoverContent>
+                </Popover>
               )}
             </div>
 
-            <Button
+            {/* <Button
               variant="ghost"
               size="icon"
               onClick={() => setIsStarred(!isStarred)}
               className={isStarred ? "text-owner" : ""}
             >
               <Star className={`w-5 h-5 ${isStarred ? "fill-owner" : ""}`} />
-            </Button>
+            </Button> */}
 
             <Dialog open={isShareDialogOpen} onOpenChange={setIsShareDialogOpen}>
               <DialogTrigger asChild>
@@ -492,7 +520,7 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
         </div>
 
         {/* Toolbar */}
-        <div className="flex items-center gap-1 px-4 py-2 border-t border-border overflow-x-auto">
+        {/* <div className="flex items-center gap-1 px-4 py-2 border-t border-border overflow-x-auto">
           <Button variant="ghost" size="icon" className="h-8 w-8"><Undo className="w-4 h-4" /></Button>
           <Button variant="ghost" size="icon" className="h-8 w-8"><Redo className="w-4 h-4" /></Button>
           <div className="w-px h-6 bg-border mx-1" />
@@ -524,7 +552,7 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
           <div className="w-px h-6 bg-border mx-1" />
           <Button variant="ghost" size="icon" className="h-8 w-8"><Link2 className="w-4 h-4" /></Button>
           <Button variant="ghost" size="icon" className="h-8 w-8"><Image className="w-4 h-4" /></Button>
-        </div>
+        </div> */}
       </header>
 
       {/* Main Content */}

@@ -119,9 +119,9 @@ export default function ShareDialog({ docId, collaborators, onCollaboratorsChang
                                 <SelectItem value="viewer">
                                     <div className="flex items-center gap-2"><Eye className="w-3 h-3" />Viewer</div>
                                 </SelectItem>
-                                <SelectItem value="commenter">
+                                {/* <SelectItem value="commenter">
                                     <div className="flex items-center gap-2"><MessageSquare className="w-3 h-3" />Commenter</div>
-                                </SelectItem>
+                                </SelectItem> */}
                             </SelectContent>
                         </Select>
                         <Button onClick={handleAddCollaborator} disabled={isAdding || !email.trim()}>
@@ -139,7 +139,9 @@ export default function ShareDialog({ docId, collaborators, onCollaboratorsChang
                             <div key={collab._id} className="flex items-center justify-between p-3 rounded-lg bg-secondary">
                                 <div className="flex items-center gap-3">
                                     <div className="w-9 h-9 rounded-full bg-primary flex items-center justify-center text-sm font-medium text-primary-foreground">
-                                        {(collab.username ?? collab.email ?? "?").slice(0, 2).toUpperCase()}
+                                        {
+                                            (collab.username ?? collab.email).split(" ").map(word => word[0].toUpperCase()).join("").slice(0, 2)
+                                        }
                                     </div>
                                     <div>
                                         <div className="flex items-center gap-2">
