@@ -223,7 +223,7 @@ async def update_doc(docId: str, dataReq: dict):
     if "_id" in updated_doc:
         updated_doc["_id"] = str(updated_doc["_id"])
     
-    connection_manager.broadcast_to_room(
+    await connection_manager.broadcast_to_room(
         docId,
         {
             "type": "TITLE_UPDATE",
