@@ -188,11 +188,19 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
           width?: number
           username?: string
           color?: string
+          new_title?: string
         }
 
         if (!message.type) return
 
         console.log("Received WS message:", message)
+
+        if(message.type === "TITLE_UPDATE") {
+          if (message.new_title) {
+            setTitle(message.new_title)
+            // toast.info("Tiêu đề đã được cập nhật")
+          }
+        }
 
         if (message.type === "ERROR") {
           // Server rejected join or other error
@@ -204,7 +212,6 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
           router.push("/dashboard")
           return
         }
-
 
         if (message.type === "JOIN") {
           if (message.user_id) {
@@ -333,7 +340,7 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
   const handleDelete = async () => {
     if (!window.confirm("Bạn có chắc muốn xóa tài liệu này?")) return
     try {
-      await deleteDocumentApi(id)
+      await deleteDocumentApi(id, user?.id ?? "")
       router.push("/dashboard")
     } catch (err) {
       console.error("Lỗi xóa tài liệu:", err)

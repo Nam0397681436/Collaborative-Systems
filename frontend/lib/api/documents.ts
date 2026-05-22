@@ -63,8 +63,8 @@ export async function updateDocumentTitleApi(docId: string, title: string): Prom
 }
 
 // ── Xóa tài liệu ───────────────────────────────────────────────────────────
-export async function deleteDocumentApi(docId: string): Promise<DocumentApiResponse> {
-  const res = await apiClient.delete<DocumentApiResponse>(`/documents/${encodeURIComponent(docId)}`)
+export async function deleteDocumentApi(docId: string, userId: string): Promise<DocumentApiResponse> {
+  const res = await apiClient.delete<DocumentApiResponse>(`/documents/${encodeURIComponent(docId)}?userId=${encodeURIComponent(userId)}`)
   return res.data
 }
 

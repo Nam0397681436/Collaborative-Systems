@@ -223,6 +223,14 @@ async def update_doc(docId: str, dataReq: dict):
     if "_id" in updated_doc:
         updated_doc["_id"] = str(updated_doc["_id"])
     
+    connection_manager.broadcast_to_room(
+        docId,
+        {
+            "type": "TITLE_UPDATE",
+            "new_title": new_title,
+        },
+    )
+
     return {
         "success": True,
         "document": updated_doc
@@ -405,8 +413,14 @@ async def update_collaborator_role(docId: str, collaboratorId: str, dataReq: dic
     }
 
 @router.delete("/documents/{docId}")
-async def delete_doc(docId: str):
+async def delete_doc(docId: str, requesterId: str | None = Query(default=None)):
     db = get_db()
+    doc = await db.documents.find_one({"_id": ObjectId(docId)})
+    if not doc:
+        return {"success": False, "message": "Không tìm thấy tài liệu"}
+    if not requesterId or str(doc.get("ownerId")) != str(requesterId):
+        return {"success": False, "message": "Chỉ chủ sở hữu mới có thể xóa tài liệu"}
+    
     result = await db.documents.delete_one({"_id": ObjectId(docId)})
 
     if result.deleted_count == 0:

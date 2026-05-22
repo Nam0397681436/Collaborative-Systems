@@ -112,7 +112,7 @@ export default function DashboardPage() {
   // ── Xóa tài liệu ─────────────────────────────────────────────────────────
   const handleDelete = async (docId: string) => {
     try {
-      await deleteDocumentApi(docId)
+      await deleteDocumentApi(docId, user?.id ?? "")
       setDocuments((prev) => prev.filter((d) => d._id !== docId))
     } catch (err) {
       console.error("Lỗi xóa tài liệu:", err)
