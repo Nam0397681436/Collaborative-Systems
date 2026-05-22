@@ -937,6 +937,43 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
         }))
     }
 
+    const sendBatchOp = () => {
+        const el = editorRef.current
+        if (!el || isNormalizingDomRef.current) return
+
+        const baseText = batchBaseTextRef.current
+        if (baseText === null) return
+
+        const currentText = getSerializedEditorText(el)
+        const operations = buildOpsFromTextDiff(baseText, currentText)
+
+        batchBaseTextRef.current = null
+
+        if (operations.length === 0) return
+
+        for (const operation of operations) {
+            if (operation.type === "insert") {
+                console.log("INSERT OP (batch):", operation)
+            } else {
+                console.log("DELETE OP (batch):", operation)
+            }
+            sendEditWithClock(operation)
+        }
+
+        sendCursorPosition()
+
+        const canonicalHtml = currentText
+            .split("\n")
+            .map((line) => (line === "" ? "<div><br></div>" : `<div>${line}</div>`))
+            .join("")
+
+        if (el.innerHTML !== canonicalHtml) {
+            isNormalizingDomRef.current = true
+            renderEditorText(el, currentText)
+            isNormalizingDomRef.current = false
+        }
+    }
+
     // ═══════════════════════════════════════════════════════════════════════
     // Input handlers
     // ═══════════════════════════════════════════════════════════════════════
@@ -962,42 +999,6 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
     useEffect(() => {
         const el = editorRef.current
         if (!el || !editable) return
-
-        const sendBatchOp = () => {
-            if (isNormalizingDomRef.current) return
-
-            const baseText = batchBaseTextRef.current
-            if (baseText === null) return
-
-            const currentText = getSerializedEditorText(el)
-            const operations = buildOpsFromTextDiff(baseText, currentText)
-
-            batchBaseTextRef.current = null
-
-            if (operations.length === 0) return
-
-            for (const operation of operations) {
-                if (operation.type === "insert") {
-                    console.log("INSERT OP (batch):", operation)
-                } else {
-                    console.log("DELETE OP (batch):", operation)
-                }
-                sendEditWithClock(operation)
-            }
-
-            sendCursorPosition()
-
-            const canonicalHtml = currentText
-                .split("\n")
-                .map((line) => (line === "" ? "<div><br></div>" : `<div>${line}</div>`))
-                .join("")
-
-            if (el.innerHTML !== canonicalHtml) {
-                isNormalizingDomRef.current = true
-                renderEditorText(el, currentText)
-                isNormalizingDomRef.current = false
-            }
-        }
 
         const scheduleBatch = () => {
             if (isNormalizingDomRef.current) return
@@ -1134,6 +1135,12 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
         // ── Op của người khác ───────────────────────────────────────────────
         if (isComposingRef.current) {
             flushCompositionIfNeeded()
+        }
+
+        if (debounceTimerRef.current !== null) {
+            clearTimeout(debounceTimerRef.current)
+            debounceTimerRef.current = null
+            sendBatchOp()
         }
 
         const localCaretBefore = getCaretOffset(el)
