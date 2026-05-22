@@ -27,9 +27,8 @@ export type Cursor = {
     user_id: string
     username: string
     color: string
-    left: number
-    top: number
-    height: number
+    index: number
+    height?: number
     width?: number
 }
 
@@ -807,15 +806,25 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
         layer.innerHTML = ""
 
         remoteCursors.forEach((cursor) => {
-            if (cursor.left === undefined || cursor.top === undefined || cursor.height === undefined) {
+            if (cursor.index === undefined || cursor.index < 0) {
                 return
             }
+
+            const rect = getRectFromIndex(editor, cursor.index)
+            if (!rect) {
+                return
+            }
+
+            const editorRect = editor.getBoundingClientRect()
+            const left = rect.left - editorRect.left + editor.scrollLeft
+            const top = rect.top - editorRect.top + editor.scrollTop
+            const height = rect.height || cursor.height || 18
 
             const cursorContainer = document.createElement("div")
             cursorContainer.style.cssText = `
                 position: absolute;
-                left: ${cursor.left}px;
-                top: ${cursor.top}px;
+                left: ${left}px;
+                top: ${top}px;
                 pointer-events: auto;
                 z-index: 100;
             `
@@ -823,7 +832,7 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
             const line = document.createElement("div")
             line.style.cssText = `
                 position: absolute;
-                height: ${cursor.height}px;
+                height: ${height}px;
                 width: 1px;
                 left: 0;
                 top: 0;
@@ -874,7 +883,7 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
             cursorContainer.appendChild(label)
             layer.appendChild(cursorContainer)
         })
-    }, [remoteCursors])
+    }, [getRectFromIndex, remoteCursors])
 
     useEffect(() => {
         renderCursors()
@@ -924,16 +933,9 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
 
         const editor = editorRef.current
         const index = getCaretOffset(editor)
-        const rect = getRectFromIndex(editor, index)
-        if (!rect) return
-
-        const editorRect = editor.getBoundingClientRect()
         socket.send(JSON.stringify({
             type: "CURSOR",
-            left: rect.left - editorRect.left + editor.scrollLeft,
-            top: rect.top - editorRect.top + editor.scrollTop,
-            height: rect.height,
-            width: rect.width,
+            index,
         }))
     }
 

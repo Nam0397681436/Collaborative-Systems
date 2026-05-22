@@ -244,13 +244,13 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
           if (!user || message.user_id === user.id) {
             return
           }
-          const { left, top, height, width, username, color } = message as { left?: number; top?: number; height?: number; width?: number; username?: string; color?: string }
-          if (left === undefined || top === undefined || height === undefined || !username || !color) {
+          const { index, username, color } = message as { index?: number; username?: string; color?: string }
+          if (index === undefined || index < 0 || !username || !color) {
             return
           }
           setRemoteCursors((current) => {
             const others = current.filter(c => c.user_id !== message.user_id)
-            const updated = [...others, { user_id: message.user_id!, username, color, left, top, height, width }]
+            const updated = [...others, { user_id: message.user_id!, username, color, index }]
             return updated
           }
           )
@@ -295,6 +295,7 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
 
         if (message.type === "LEAVE") {
           setOnlineUsers((current) => current.filter((u) => u.id !== message.user_id))
+          setRemoteCursors((current) => current.filter(c => c.user_id !== message.user_id))
         }
       } catch (err) {
       }

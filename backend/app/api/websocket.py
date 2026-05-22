@@ -56,12 +56,9 @@ async def websocket_endpoint(websocket: WebSocket, doc_id: str, user_id: str):
             
             elif msg_type == "CURSOR":
                 user_info = connection_manager.active_users.get(doc_id, {}).get(user_id, {})
-                left = data.get("left")
-                top = data.get("top")
-                height = data.get("height")
-                width = data.get("width")
+                index = data.get("index")
 
-                if left is None or top is None or height is None:
+                if index is None:
                     logger.warning(f"Invalid CURSOR payload from {user_id}: {data}")
                     continue
 
@@ -69,12 +66,8 @@ async def websocket_endpoint(websocket: WebSocket, doc_id: str, user_id: str):
                     "type":"CURSOR",
                     "user_id": user_id,
                     "username": user_info.get("username", "Unknown"),
-                    "color": user_info.get("color", "#000000")
-                ,
-                    "left": left,
-                    "top": top,
-                    "height": height,
-                    "width": width,
+                    "color": user_info.get("color", "#000000"),
+                    "index": index,
                 }
                 await connection_manager.broadcast_to_room(
                     doc_id, 
