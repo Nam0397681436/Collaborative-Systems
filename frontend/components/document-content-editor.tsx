@@ -983,17 +983,21 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
 
         const el = editorRef.current
         isComposingRef.current = false
-        compositionDataRef.current = null
 
-        const currentText = getSerializedEditorText(el)
-        editorTextRef.current = currentText
+        if (batchBaseTextRef.current === null && compositionDataRef.current) {
+            batchBaseTextRef.current = compositionDataRef.current.text
+        }
 
         if (debounceTimerRef.current !== null) {
             clearTimeout(debounceTimerRef.current)
             debounceTimerRef.current = null
         }
 
-        batchBaseTextRef.current = null
+        const currentText = getSerializedEditorText(el)
+        editorTextRef.current = currentText
+        compositionDataRef.current = null
+
+        sendBatchOp()
     }, [])
 
     useEffect(() => {
