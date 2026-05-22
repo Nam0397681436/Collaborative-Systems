@@ -211,8 +211,8 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
             const v_clock = message.v_clock as VectorClock
             setOnlineUsers(message.online_users || [])
             if (Object.keys(v_clock).length > 0) {
-              setVectorClock(v_clock)
-              setCurrentClock(v_clock[user.id] || 0)
+              setVectorClock((prev) => mergeVectorClock(prev, v_clock))
+              setCurrentClock((prev) => Math.max(prev, v_clock[user.id] || 0))
             }
           }
         }
@@ -253,10 +253,17 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
           const { op, ops, v_clock } = message as { op?: Operation; ops?: Operation[]; v_clock?: VectorClock }
           const editOps = ops ?? (op ? [op] : [])
           if (editOps.length === 0 || !v_clock) return
-          const mergedClock = mergeVectorClock(vectorClock, v_clock)
-          const nextClock = Math.max(currentClock, mergedClock[user.id] ?? 0) + 1
-          setCurrentClock(nextClock)
-          setVectorClock({ ...mergedClock, [user.id]: nextClock })
+          const isOwnEcho = message.user_id === user.id
+          if (isOwnEcho) {
+            setVectorClock((prev) => mergeVectorClock(prev, v_clock))
+          } else {
+            setVectorClock((prev) => {
+              const mergedClock = mergeVectorClock(prev, v_clock)
+              const nextClock = Math.max(prev[user.id] ?? 0, mergedClock[user.id] ?? 0) + 1
+              setCurrentClock(nextClock)
+              return { ...mergedClock, [user.id]: nextClock }
+            })
+          }
           try {
             handleRemoteEditRef.current?.(editOps, message.user_id)
           } catch (handlerErr) {
