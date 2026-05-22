@@ -4,6 +4,7 @@ from model.enum_user_role import UserRole
 from app.api.database import get_db, close_db
 from bson import ObjectId
 from model.connection_socket import connection_manager
+from infra.redis.redis_client import RedisClient
 
 router = APIRouter()
 
@@ -94,8 +95,14 @@ async def get_doc(docId: str, requesterId: str | None = Query(default=None)):
     
     if not ObjectId.is_valid(docId):
         raise HTTPException(status_code=400, detail="ID tài liệu không hợp lệ")
-
+    
+    # Lấy nội dung text từ Redis
+    redis_client = RedisClient.get_client()
+    redis_content = await redis_client.get(f"snapshot:{docId}")
+    
+    # BẮT BUỘC phải lấy doc từ MongoDB để check quyền (ownerId, collaborators)
     doc = await db.documents.find_one({"_id": ObjectId(docId)})
+
     if not doc:
         raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu")
 
@@ -156,7 +163,15 @@ async def get_doc(docId: str, requesterId: str | None = Query(default=None)):
     if not docs:
         raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu")
         
-    return {"success": True, "document": docs[0]}
+    document_data = docs[0]
+    
+    # NẾU TRÊN REDIS CÓ DỮ LIỆU THÌ GHI ĐÈ VÀO JSON TRẢ VỀ
+    if redis_content is not None:
+        if isinstance(redis_content, bytes):
+            redis_content = redis_content.decode('utf-8')
+        document_data["content_snapshot"] = str(redis_content)
+        
+    return {"success": True, "document": document_data}
 
 @router.get("/users/{userId}/documents")
 async def get_user_documents(userId: str):
