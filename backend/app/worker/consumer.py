@@ -99,6 +99,15 @@ class OTWorker:
                 durable=False
             )
             logger.info(f"Processed & Broadcasted OT for Doc: {doc_id} by User: {user_id} via RabbitMQ (Splitted into {len(ops_new)} ops)")
+            
+
+            # save snapshot text
+            from app.core.snapshot_text import save_snapshot_text
+            new_text = await save_snapshot_text(doc_id, broadcast_payload)
+
+            logger.info(f"Saved snapshot for Doc: {doc_id} , text:{new_text}")
+
+
 
 async def main():
     logger.info("Initializing OT Worker dependencies...")
