@@ -252,6 +252,10 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
     const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
     const batchBaseTextRef = useRef<string | null>(null)
 
+    // Refs to always-latest versions of functions (avoids stale closures)
+    const sendBatchOpRef = useRef<() => void>(() => {})
+    const sendEditWithClockRef = useRef<(op: Operation) => void>(() => {})
+
     useEffect(() => {
         currentClockRef.current = currentClock
     }, [currentClock])
@@ -928,6 +932,9 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
         socket.send(JSON.stringify({ type: "EDIT", op: opWithId, v_clock: newVectorClock }))
     }
 
+    // Keep ref always pointing to latest version
+    sendEditWithClockRef.current = sendEditWithClock
+
     const sendCursorPosition = () => {
         if (!socket || socket.readyState !== WebSocket.OPEN || !user || !editorRef.current) return
 
@@ -959,7 +966,8 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
             } else {
                 console.log("DELETE OP (batch):", operation)
             }
-            sendEditWithClock(operation)
+            // Use ref to always call the latest version (avoid stale closure)
+            sendEditWithClockRef.current(operation)
         }
 
         sendCursorPosition()
@@ -975,6 +983,9 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
             isNormalizingDomRef.current = false
         }
     }
+
+    // Keep ref always pointing to latest version
+    sendBatchOpRef.current = sendBatchOp
 
     // ═══════════════════════════════════════════════════════════════════════
     // Input handlers
@@ -999,7 +1010,8 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
         editorTextRef.current = currentText
         compositionDataRef.current = null
 
-        sendBatchOp()
+        // Call via ref to always use the latest version (avoid stale closure)
+        sendBatchOpRef.current()
     }, [])
 
     useEffect(() => {
@@ -1022,7 +1034,8 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
             }
             debounceTimerRef.current = setTimeout(() => {
                 debounceTimerRef.current = null
-                sendBatchOp()
+                // Call via ref to always use the latest version (avoid stale closure)
+                sendBatchOpRef.current()
             }, 300)
         }
 
@@ -1050,17 +1063,14 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
                 return
             }
 
-            setTimeout(() => {
-                if (isComposingRef.current) return
-                scheduleBatch()
-            }, 0)
+            scheduleBatch()
         }
 
         const handleBlur = () => {
             if (debounceTimerRef.current !== null) {
                 clearTimeout(debounceTimerRef.current)
                 debounceTimerRef.current = null
-                sendBatchOp()
+                sendBatchOpRef.current()
             }
         }
 
@@ -1069,7 +1079,7 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
                 if (debounceTimerRef.current !== null) {
                     clearTimeout(debounceTimerRef.current)
                     debounceTimerRef.current = null
-                    sendBatchOp()
+                    sendBatchOpRef.current()
                 }
             }
         }
@@ -1084,7 +1094,7 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
             if (debounceTimerRef.current !== null) {
                 clearTimeout(debounceTimerRef.current)
                 debounceTimerRef.current = null
-                sendBatchOp()
+                sendBatchOpRef.current()
             }
             el.removeEventListener("compositionstart", handleCompositionStart)
             el.removeEventListener("compositionend", handleCompositionEnd)
@@ -1146,7 +1156,8 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
         if (debounceTimerRef.current !== null) {
             clearTimeout(debounceTimerRef.current)
             debounceTimerRef.current = null
-            sendBatchOp()
+            // Call via ref to always use the latest version (avoid stale closure)
+            sendBatchOpRef.current()
         }
 
         const localCaretBefore = getCaretOffset(el)
