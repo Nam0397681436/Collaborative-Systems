@@ -15,7 +15,7 @@ async def websocket_endpoint(websocket: WebSocket, doc_id: str, user_id: str):
     """
     Endpoint xử lý kết nối WebSocket cho từng document
     """
-    await connection_manager.connect(websocket, doc_id)
+    await connection_manager.connect(websocket, doc_id, user_id)
 
     try:
         redis_client = RedisClient.get_client()
@@ -52,6 +52,16 @@ async def websocket_endpoint(websocket: WebSocket, doc_id: str, user_id: str):
                         "online_users": connection_manager.get_online_users(doc_id),
                         "v_clock": v_clock,
                     },
+                )
+                await RabbitMQProducer().publish(
+                    message=json.dumps({
+                        "type": "JOIN",
+                        "doc_id": doc_id,
+                        "user_id": user_id,
+                        "v_clock": v_clock
+                    }),
+                    exchange="ot_exchange",
+                    routing_key=get_routing_key(doc_id,num_queue=1)
                 )
             
             elif msg_type == "CURSOR":
