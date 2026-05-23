@@ -51,7 +51,8 @@ class OTWorker:
                             text = doc.get("content_snapshot", "")
                 # save snapshot text to cache
                 if text is not None:
-                    await save_snapshot_text(doc_id, text)
+                    redis_client = RedisClient.get_client()
+                    await redis_client.set(f"snapshot:{doc_id}", text)
 
                 await self.producer.publish(
                     message=json.dumps(
@@ -66,6 +67,9 @@ class OTWorker:
                     routing_key="",
                     exchange_type="fanout",
                     durable=False,
+                )
+                logger.info(
+                    f"Processed & Broadcasted OT for Doc: {doc_id} by User: {user_id} via RabbitMQ (Joined)"
                 )
                 return
 
