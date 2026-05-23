@@ -6,21 +6,21 @@ logger=logging.getLogger("app.connection_manager")
 
 class ConnectionManager:
     def __init__(self):
-        self.active_connections: Dict[str,List[WebSocket]] = {}
+        self.active_connections: Dict[str, Dict[WebSocket, str]] = {}
         self.active_users: Dict[str, Dict[str, Any]] = {}
 
-    async def connect(self, websocket: WebSocket, doc_id: str):
+    async def connect(self, websocket: WebSocket, doc_id: str, user_id: str):
         await websocket.accept()
         
         if doc_id not in self.active_connections:
-            self.active_connections[doc_id] = []
+            self.active_connections[doc_id] = {}
 
-        self.active_connections[doc_id].append(websocket)
+        self.active_connections[doc_id][websocket] = user_id
 
 
     async def disconnect(self, websocket: WebSocket, doc_id: str, user_id: str):
         if doc_id in self.active_connections and websocket in self.active_connections[doc_id]:
-            self.active_connections[doc_id].remove(websocket)
+            del self.active_connections[doc_id][websocket]
 
         if doc_id in self.active_users and user_id in self.active_users[doc_id]:
             del self.active_users[doc_id][user_id]
@@ -83,12 +83,19 @@ class ConnectionManager:
     async def broadcast_to_room(self, doc_id: str, message: dict):
         """Gửi tin nhắn cho tất cả mọi người trong một phòng (room)"""
         if doc_id in self.active_connections:
-            for websocket in list(self.active_connections[doc_id]):
+            for websocket in list(self.active_connections[doc_id].keys()):
                 try:
                     await websocket.send_json(message)
                 except Exception as e:
-                    logger.error(f"Lỗi khi gửi tin nhắn cho user {websocket}: {e}")       
-    
+                    logger.error(f"Lỗi khi gửi tin nhắn cho user {websocket}: {e}") 
+    async def send_to_user(self,doc_id: str, user_id: str, data: dict):
+        if doc_id in self.active_connections:
+            for websocket, uid in list(self.active_connections[doc_id].items()):
+                if uid == user_id:
+                    try:
+                        await websocket.send_json(data)
+                    except Exception as e:
+                        logger.error(f"Lỗi khi gửi tin nhắn cho user {user_id}: {e}")
 # Năm
 
 # Module-level shared manager instance so other modules can broadcast/push updates
