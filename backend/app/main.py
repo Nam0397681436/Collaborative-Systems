@@ -77,6 +77,13 @@ async def listen_for_broadcast():
                 async with message.process():
                     data = json.loads(message.body.decode('utf-8'))
                     doc_id = data.get("doc_id")
+                    msg_type= data.get("type")
+
+                    if msg_type == "JOIN":
+                        # gui rieng message "JOIN" cho user vua join
+                        user_id = data.get("user_id")
+                        await connection_manager.send_to_user(doc_id, user_id, data)
+                        continue
                     
                     # Gửi cho tất cả mọi người trong phòng (bao gồm cả người gõ)
                     from app.api.websocket import connection_manager
