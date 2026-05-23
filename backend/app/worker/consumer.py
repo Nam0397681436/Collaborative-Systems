@@ -40,10 +40,23 @@ class OTWorker:
                 doc_id = payload.get("doc_id")
                 client_v_clock = payload.get("v_clock", {})
                 text = await get_snapshot_text(doc_id)
+                if text is None:
+                    from infra.mongodb.database import get_db
+                    from bson import ObjectId
+
+                    db = get_db()
+                    if db is not None:
+                        doc = await db["documents"].find_one({"_id": ObjectId(doc_id)})
+                        if doc:
+                            text = doc.get("content_snapshot", "")
+                # save snapshot text to cache
+                if text is not None:
+                    await save_snapshot_text(doc_id, text)
+
                 await self.producer.publish(
                     message=json.dumps(
                         {
-                            "type": "JOIN",
+                            "type": "JOIN_SYNC_CONTENT",
                             "doc_id": doc_id,
                             "user_id": user_id,
                             "text": text,
