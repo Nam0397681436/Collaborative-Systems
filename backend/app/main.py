@@ -48,6 +48,8 @@ app.add_middleware(
         "http://192.168.70.101:4000",
         "http://10.150.60.84:4000",
         "http://10.150.60.38:4000",
+        "http://10.150.60.23:4000",
+        "http://10.150.60.116:4000",  # duong
     ],
     allow_credentials=True,
     allow_methods=["*"],

@@ -1,6 +1,6 @@
 import aio_pika
 import json
-import hashlib 
+import hashlib
 import os
 import logging
 from dotenv import load_dotenv
@@ -16,9 +16,15 @@ RABBITMQ_PASS = os.getenv("RABBITMQ_PASS", "guest")
 
 class RabbitMQConnection:
     """Quản lý 1 connection duy nhất, nhưng 2 channel riêng biệt cho producer và consumer."""
+
     connection: aio_pika.RobustConnection = None
-    producer_channel: aio_pika.Channel = None   # Channel dành riêng cho Producer (publish)
-    consumer_channel: aio_pika.Channel = None   # Channel dành riêng cho Consumer (subscribe)
+    producer_channel: aio_pika.Channel = (
+        None  # Channel dành riêng cho Producer (publish)
+    )
+    consumer_channel: aio_pika.Channel = (
+        None  # Channel dành riêng cho Consumer (subscribe)
+    )
+
 
 rabbitmq_conn = RabbitMQConnection()
 
@@ -35,7 +41,13 @@ async def connect_to_rabbitmq():
         # Tạo 2 channel độc lập từ cùng 1 connection
         rabbitmq_conn.producer_channel = await rabbitmq_conn.connection.channel()
         rabbitmq_conn.consumer_channel = await rabbitmq_conn.connection.channel()
-        logger.info("Connected to RabbitMQ successfully! (producer_channel + consumer_channel opened)")
+        
+        # Khởi tạo lock cho producer an toàn tại thời điểm startup
+        RabbitMQProducer._publish_lock = asyncio.Lock()
+        
+        logger.info(
+            "Connected to RabbitMQ successfully! (producer_channel + consumer_channel opened)"
+        )
     except Exception as e:
         logger.error(f"Error connecting to RabbitMQ: {e}")
         raise
@@ -51,38 +63,55 @@ async def close_rabbitmq_connection():
 def get_producer_channel() -> aio_pika.Channel:
     """Lấy channel dành riêng cho Producer."""
     if rabbitmq_conn.producer_channel is None:
-        raise Exception("RabbitMQ producer channel is not initialized. Call connect_to_rabbitmq() first.")
+        raise Exception(
+            "RabbitMQ producer channel is not initialized. Call connect_to_rabbitmq() first."
+        )
     return rabbitmq_conn.producer_channel
 
 
 def get_consumer_channel() -> aio_pika.Channel:
     """Lấy channel dành riêng cho Consumer."""
     if rabbitmq_conn.consumer_channel is None:
-        raise Exception("RabbitMQ consumer channel is not initialized. Call connect_to_rabbitmq() first.")
+        raise Exception(
+            "RabbitMQ consumer channel is not initialized. Call connect_to_rabbitmq() first."
+        )
     return rabbitmq_conn.consumer_channel
+
+
+import asyncio
 
 
 class RabbitMQProducer:
     """Producer dùng producer_channel riêng, không ảnh hưởng đến consumer."""
+
+    _publish_lock = None
+
     def __init__(self):
         self.channel = get_producer_channel()
 
-    async def publish(self, message: str, exchange: str, routing_key: str = "", exchange_type: str = "direct", durable: bool = True):
-        msg = aio_pika.Message(
-            body=message.encode(),
-            content_type="application/json",
-            delivery_mode=aio_pika.DeliveryMode.PERSISTENT
-        )
-        exchange_obj = await self.channel.declare_exchange(
-            name=exchange,
-            type=exchange_type,
-            durable=durable
-        )
-        await exchange_obj.publish(msg, routing_key=routing_key)
+    async def publish(
+        self,
+        message: str,
+        exchange: str,
+        routing_key: str = "",
+        exchange_type: str = "direct",
+        durable: bool = True,
+    ):
+        async with RabbitMQProducer._publish_lock:
+            msg = aio_pika.Message(
+                body=message.encode(),
+                content_type="application/json",
+                delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+            )
+            exchange_obj = await self.channel.declare_exchange(
+                name=exchange, type=exchange_type, durable=durable
+            )
+            await exchange_obj.publish(msg, routing_key=routing_key)
 
 
 class RabbitMQConsumer:
     """Consumer dùng consumer_channel riêng, không bị ảnh hưởng bởi publisher."""
+
     def __init__(self):
         self.channel = get_consumer_channel()
 
