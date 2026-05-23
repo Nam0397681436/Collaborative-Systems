@@ -81,14 +81,15 @@ async def listen_for_broadcast():
                     doc_id = data.get("doc_id")
                     msg_type = data.get("type")
 
+                    # Gửi cho tất cả mọi người trong phòng (bao gồm cả người gõ)
+                    from app.api.websocket import connection_manager
+
                     if msg_type == "JOIN_SYNC_CONTENT":
                         # gui rieng message "JOIN" cho user vua join
                         user_id = data.get("user_id")
                         await connection_manager.send_to_user(doc_id, user_id, data)
+                        logging.info(f"Sync content to user: {user_id}")
                         continue
-
-                    # Gửi cho tất cả mọi người trong phòng (bao gồm cả người gõ)
-                    from app.api.websocket import connection_manager
 
                     await connection_manager.broadcast_to_room(doc_id, data)
     except asyncio.CancelledError:
