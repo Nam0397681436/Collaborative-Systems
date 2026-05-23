@@ -83,6 +83,7 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
 
   const [document, setDocument] = useState<DocumentItem | null>(null)
   const [title, setTitle] = useState("")
+  const [initialContent, setInitialContent] = useState("")
   const [vectorClock, setVectorClock] = useState<VectorClock>({})
   const [currentClock, setCurrentClock] = useState(0)
   const [isLoading, setIsLoading] = useState(true)
@@ -109,6 +110,7 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
         setDocument(res.document)
         setTitle(res.document.title ?? "")
         setVectorClock(res.document.global_v_clock ?? {})
+        setInitialContent(res.document.content_snapshot ?? "")
         setCurrentClock(res.document.global_v_clock ? res.document.global_v_clock[user.id] || 0 : 0)
       }
     } catch (err) {
@@ -177,6 +179,7 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
           username?: string
           color?: string
           new_title?: string
+          text?: string
         }
 
         if (!message.type) return
@@ -210,6 +213,26 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
               setCurrentClock((prev) => Math.max(prev, v_clock[user.id] || 0))
             }
           }
+        }
+
+        if (message.type === "JOIN_SYNC_CONTENT") {
+          const { doc_id, text, user_id } = message as { doc_id?: string; text?: string; user_id?: string }
+
+          if (doc_id && doc_id !== document._id) {
+            return
+          }
+
+          const nextText = text ?? ""
+
+          if (doc_id === document._id && user_id && user_id !== user.id) {
+            console.log("Received JOIN_SYNC_CONTENT with text length:", nextText.length)
+          }
+
+          if (text == null) {
+            console.error("Received JOIN_SYNC_CONTENT without text")
+          }
+
+          setInitialContent((current) => (current === nextText ? current : nextText))
         }
 
         if (message.type === "ROLE_UPDATE") {
@@ -562,7 +585,7 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
           <DocumentContentEditor
             remoteCursors={remoteCursors}
             editable={userRole ? userRole !== "viewer" : false}
-            initialContent={document.content_snapshot ?? ""}
+            initialContent={initialContent}
             socket={socketRef.current}
             currentClock={currentClock}
             setCurrentClock={setCurrentClock}
