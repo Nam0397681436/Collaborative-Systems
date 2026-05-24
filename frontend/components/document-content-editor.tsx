@@ -1084,11 +1084,33 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
             }
         }
 
+        // Flush ngay lập tức khi người dùng di chuyển con trỏ bằng phím mũi tên trái/phải
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+                if (debounceTimerRef.current !== null) {
+                    clearTimeout(debounceTimerRef.current)
+                    debounceTimerRef.current = null
+                    sendBatchOpRef.current()
+                }
+            }
+        }
+
+        // Flush ngay lập tức khi người dùng click chuột để di chuyển con trỏ
+        const handleMouseDown = () => {
+            if (debounceTimerRef.current !== null) {
+                clearTimeout(debounceTimerRef.current)
+                debounceTimerRef.current = null
+                sendBatchOpRef.current()
+            }
+        }
+
         el.addEventListener("compositionstart", handleCompositionStart)
         el.addEventListener("compositionend", handleCompositionEnd)
         el.addEventListener("input", handleInput)
         el.addEventListener("blur", handleBlur)
         el.addEventListener("beforeinput", handleBeforeInput)
+        el.addEventListener("keydown", handleKeyDown)
+        el.addEventListener("mousedown", handleMouseDown)
 
         return () => {
             if (debounceTimerRef.current !== null) {
@@ -1101,6 +1123,8 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
             el.removeEventListener("input", handleInput)
             el.removeEventListener("blur", handleBlur)
             el.removeEventListener("beforeinput", handleBeforeInput)
+            el.removeEventListener("keydown", handleKeyDown)
+            el.removeEventListener("mousedown", handleMouseDown)
         }
     }, [editable])
 
