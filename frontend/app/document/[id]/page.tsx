@@ -299,36 +299,6 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
             setCurrentClock(nextClock)
           }
 
-          // Khi text thay đổi độ dài (insert/delete), transform index của tất cả
-          // remote cursors để giữ vị trí đúng:
-          //   - insert tại p  → index >= p thì tăng lên
-          //   - delete tại p  → index nằm trong vùng xóa thì kẹp về p (clamp)
-          //                  → index sau vùng xóa thì giảm xuống
-          // Không adjust cursor của chính người vừa edit (họ sẽ tự gửi CURSOR update)
-          const editorUserId = message.user_id
-          setRemoteCursors((cursors) =>
-            cursors.map((cursor) => {
-              if (cursor.user_id === editorUserId) return cursor
-              let index = cursor.index
-              for (const op of editOps) {
-                const opLen = op.char.length
-                if (op.type === "insert") {
-                  if (op.index <= index) index += opLen
-                } else if (op.type === "delete") {
-                  const opEnd = op.index + opLen
-                  if (opEnd <= index) {
-                    // cursor nằm sau vùng xóa → dịch trái
-                    index -= opLen
-                  } else if (op.index < index) {
-                    // cursor nằm trong vùng bị xóa → kẹp về đầu vùng xóa
-                    index = op.index
-                  }
-                }
-              }
-              return { ...cursor, index: Math.max(0, index) }
-            })
-          )
-
           try {
             handleRemoteEditRef.current?.(editOps, message.user_id)
           } catch (handlerErr) {
