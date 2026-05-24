@@ -1,13 +1,14 @@
+import logging
+from bson import ObjectId
 from fastapi import APIRouter, HTTPException, Query
 from datetime import datetime
 from model.enum_user_role import UserRole
 from app.api.database import get_db, close_db
-from bson import ObjectId
 from model.connection_socket import connection_manager
 from infra.redis.redis_client import RedisClient
 
 router = APIRouter()
-
+logger = logging.getLogger(__name__)
 
 @router.post("/documents")
 async def get_docs(dataReq: dict):
@@ -35,6 +36,7 @@ async def get_docs(dataReq: dict):
         "collaborators": [{"user_id": ownerId, "role": "owner"}],
         "global_v_clock": {ownerId: 0},
         "content_snapshot": "",
+        "epoch": 0,
         "created_at": datetime.now(),
         "updated_at": datetime.now(),
     }
@@ -484,3 +486,128 @@ async def delete_doc(docId: str, userId: str | None = Query(default=None)):
         return {"success": False, "message": "Không tìm thấy tài liệu để xóa"}
 
     return {"success": True, "message": "Xóa tài liệu thành công"}
+
+
+@router.get("/documents/{docId}/versions")
+async def get_doc_versions(docId: str):
+    """
+    Lấy toàn bộ danh sách các checkpoint phiên bản của tài liệu.
+    """
+    from infra.mongodb.repository.operation_repo import OperationRepository
+    try:
+        checkpoints = await OperationRepository.get_checkpoints(docId)
+        return {"success": True, "versions": checkpoints}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lỗi khi lấy danh sách phiên bản: {str(e)}")
+
+
+@router.get("/documents/{docId}/versions/{version_number}")
+async def get_doc_version_preview(docId: str, version_number: int):
+    """
+    Phục dựng nội dung phiên bản lịch sử cụ thể (Checkpoint).
+    """
+    from infra.mongodb.repository.operation_repo import OperationRepository
+    from datetime import datetime
+    try:
+        checkpoint = await OperationRepository.get_checkpoint_by_version(docId, version_number)
+        if not checkpoint:
+            raise HTTPException(status_code=404, detail="Không tìm thấy checkpoint phiên bản tương ứng")
+        
+        # Vì version_number đại diện chính xác cho 1 Checkpoint, ta không cần cộng thêm Delta
+        # (Việc cộng Delta của các operations sau đó sẽ dẫn đến trộn lẫn timeline nếu đã từng khôi phục)
+        checkpoint_snapshot = checkpoint.get("content_snapshot", "")
+        
+        return {
+            "success": True,
+            "version_number": version_number,
+            "epoch": checkpoint.get("epoch", 0),
+            "v_clock": checkpoint.get("checkpoint_v_clock", {}),
+            "content": checkpoint_snapshot
+        }
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lỗi khi phục dựng phiên bản: {str(e)}")
+
+
+@router.post("/documents/{docId}/versions/{version_number}/revert")
+async def revert_doc_to_version(docId: str, version_number: int, requesterId: str | None = Query(default=None)):
+    """
+    Khôi phục tài liệu về một phiên bản lịch sử cụ thể (Epoch Versioning).
+    Ghi đè MongoDB, dọn cache Redis, tăng epoch và broadcast sự kiện REVERT qua RabbitMQ.
+    """
+    from infra.mongodb.repository.operation_repo import OperationRepository
+    from datetime import datetime
+    from infra.redis.redis_client import RedisClient
+    from infra.rabbitmq.rabbit_mq_gateway import RabbitMQProducer
+    import json
+    
+    db = get_db()
+    # Kiểm tra quyền sở hữu hoặc cộng tác viên
+    doc = await db.documents.find_one({"_id": ObjectId(docId)})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu")
+    if not requesterId:
+        raise HTTPException(status_code=403, detail="Không có quyền truy cập")
+        
+    is_owner = str(doc.get("ownerId")) == str(requesterId)
+    is_collaborator = any(str(collab.get("user_id")) == str(requesterId) for collab in doc.get("collaborators", []))
+    if not is_owner and not is_collaborator:
+        raise HTTPException(status_code=403, detail="Không có quyền thực hiện khôi phục")
+
+    try:
+        # 1. Lấy nội dung của phiên bản tương ứng
+        checkpoint = await OperationRepository.get_checkpoint_by_version(docId, version_number)
+        if not checkpoint:
+            raise HTTPException(status_code=404, detail="Không tìm thấy checkpoint phiên bản")
+            
+        reconstructed_text = checkpoint.get("content_snapshot", "")
+        revert_clock = checkpoint.get("checkpoint_v_clock", {})
+        
+        # 2. Tăng Epoch mới của tài liệu lên 1
+        new_epoch = doc.get("epoch", 0) + 1
+        
+        # 3. Ghi đè lên documents chính trong MongoDB
+        await db.documents.update_one(
+            {"_id": ObjectId(docId)},
+            {
+                "$set": {
+                    "content_snapshot": reconstructed_text,
+                    "epoch": new_epoch,
+                    "global_v_clock": revert_clock,
+                    "updated_at": datetime.utcnow()
+                }
+            }
+        )
+        
+        # 4. Ghi đè lên cache Redis và xóa lịch sử thao tác cũ
+        redis_client = RedisClient.get_client()
+        await redis_client.set(f"snapshot:{docId}", reconstructed_text)
+        await redis_client.set(f"snapshot_count:{docId}", 0)
+        await redis_client.delete(f"doc_history:{docId}")
+        
+        # 5. Phát sự kiện REVERT qua RabbitMQ để tự động đồng bộ tức thời toàn phòng
+        revert_clock = checkpoint.get("checkpoint_v_clock", {})
+        revert_payload = {
+            "type": "REVERT",
+            "doc_id": docId,
+            "v_clock": revert_clock, # Dùng clock từ checkpoint gốc làm clock xuất phát tiếp theo cho mọi người
+            "epoch": new_epoch,
+            "content": reconstructed_text
+        }
+        
+        producer = RabbitMQProducer()
+        await producer.publish(
+            message=json.dumps(revert_payload),
+            exchange="broadcast_to_room",
+            routing_key="",
+            exchange_type="fanout",
+            durable=False
+        )
+        
+        logger.info(f"Document {docId} successfully reverted to version {version_number} with new epoch {new_epoch}")
+        return {"success": True, "message": "Khôi phục tài liệu thành công", "epoch": new_epoch}
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lỗi khi khôi phục phiên bản: {str(e)}")

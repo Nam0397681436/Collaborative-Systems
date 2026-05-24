@@ -101,6 +101,7 @@ async def websocket_endpoint(websocket: WebSocket, doc_id: str, user_id: str):
                     ),  # Ví dụ: {type: 'insert', char: 'A', index: 10}
                     "version": data.get("version", None),
                     "v_clock": data.get("v_clock", None),
+                    "epoch": data.get("epoch", 0),
                 }
 
                 # push len RabbitMq

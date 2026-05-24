@@ -7,6 +7,7 @@ class BaseOperation(BaseModel):
     doc_id: str
     v_clock: dict[str, int]
     opId: Optional[str] = None
+    epoch: int = 0
     
 class InsertOperation(BaseOperation):
     op_type: Literal['insert']

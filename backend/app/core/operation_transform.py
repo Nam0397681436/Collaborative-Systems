@@ -88,13 +88,14 @@ def transform(op_new: OpPayload, op_old: OpPayload) -> List[OpPayload]:
 
     return [op_new]
 
+import logging
 def process_concurrent_operations(op_new: OpPayload, history_ops_ascending: List[OpPayload]) -> List[OpPayload]:
     """
     Xử lý OT bằng cách duyệt tuần tự qua lịch sử (cũ -> mới nhất).
     Tích hợp bộ lọc Causality Filter qua Vector Clock.
     """
     current_ops = [op_new]
-    
+    logging.info(f"OpNew: {op_new}\n---000---")
     for op_old in history_ops_ascending:
         hist_user = op_old.user_id
         hist_version = op_old.v_clock.get(hist_user, 0)
@@ -110,6 +111,8 @@ def process_concurrent_operations(op_new: OpPayload, history_ops_ascending: List
             # Causality Filter: Chỉ Transform NẾU thao tác cũ là "Đồng thời"
             if hist_version > client_version:
                 transformed = transform(op, op_old)
+                logging.info(f"OpOld: {op_old}\n---111---")
+                logging.info(f"Transformed: {transformed}\n---222---")
                 new_ops.extend(transformed)
             else:
                 new_ops.append(op)
