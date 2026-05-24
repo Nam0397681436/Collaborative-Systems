@@ -14,6 +14,8 @@ interface DocumentContentEditorProps {
     vectorClock: VectorClock
     setVectorClock: React.Dispatch<React.SetStateAction<VectorClock>>
     handleRemoteEditRef?: React.MutableRefObject<(ops: Operation[], remoteUserId?: string) => void>
+    epoch?: number
+    handleRevertRef?: React.MutableRefObject<(content: string) => void>
 }
 
 export type Operation = {
@@ -275,13 +277,16 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
     setCurrentClock,
     vectorClock,
     setVectorClock,
-    handleRemoteEditRef
+    handleRemoteEditRef,
+    epoch = 0,
+    handleRevertRef
 }) => {
     const { user } = useAuth()
     const editorRef = useRef<HTMLDivElement>(null)
     const cursorLayerRef = useRef<HTMLDivElement>(null)
     const currentClockRef = useRef(currentClock)
     const vectorClockRef = useRef(vectorClock)
+    const epochRef = useRef(epoch)
     const editorTextRef = useRef("")
     const isNormalizingDomRef = useRef(false)
 
@@ -307,6 +312,10 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
     useEffect(() => {
         vectorClockRef.current = vectorClock
     }, [vectorClock])
+
+    useEffect(() => {
+        epochRef.current = epoch
+    }, [epoch])
 
     // ═══════════════════════════════════════════════════════════════════════
     // Khởi tạo DOM đồng nhất
@@ -1003,7 +1012,7 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
 
         pendingOpsRef.current.push({ op: opWithId, userId: user.id, opId })
 
-        socket.send(JSON.stringify({ type: "EDIT", op: opWithId, v_clock: newVectorClock }))
+        socket.send(JSON.stringify({ type: "EDIT", op: opWithId, v_clock: newVectorClock, epoch: epochRef.current }))
     }
 
     // Keep ref always pointing to latest version
@@ -1428,6 +1437,28 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
         if (!handleRemoteEditRef) return
         handleRemoteEditRef.current = handleRemoteEdit
     }, [handleRemoteEditRef, handleRemoteEdit])
+
+    const handleRevert = useCallback((content: string) => {
+        // Clear pending operations
+        pendingOpsRef.current = []
+        // Clear undo/redo stacks
+        undoStackRef.current = []
+        redoStackRef.current = []
+        undoRedoOpIdsRef.current.clear()
+        
+        // Reset DOM text
+        if (editorRef.current) {
+            renderEditorText(editorRef.current, content)
+            editorTextRef.current = content
+            // Reset batch text base
+            batchBaseTextRef.current = content
+        }
+    }, [])
+
+    useEffect(() => {
+        if (!handleRevertRef) return
+        handleRevertRef.current = handleRevert
+    }, [handleRevertRef, handleRevert])
 
 
     // ═══════════════════════════════════════════════════════════════════════
