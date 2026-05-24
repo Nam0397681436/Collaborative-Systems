@@ -130,7 +130,7 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
         setVectorClock(fetchedClock)
         setInitialContent(res.document.content_snapshot ?? "")
         setCurrentClock(res.document.global_v_clock ? res.document.global_v_clock[user.id] || 0 : 0)
-        
+
         const fetchedEpoch = res.document.epoch ?? 0
         epochRef.current = fetchedEpoch
         setEpoch(fetchedEpoch)
@@ -224,15 +224,15 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
             const nextEpoch = newEpoch ?? 0
             epochRef.current = nextEpoch
             setEpoch(nextEpoch)
-            
+
             // Cập nhật Vector Clock cục bộ
             const newVClock = v_clock ?? {}
             vectorClockPageRef.current = newVClock
             setVectorClock(newVClock)
-            
+
             const nextClock = newVClock[user.id] ?? 0
             setCurrentClock(nextClock)
-            
+
             // Thực hiện revert editor
             handleRevertRef.current?.(content)
             setInitialContent(content)
@@ -484,6 +484,10 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
 
   const handleRevert = async () => {
     if (selectedVersion === null || !user?.id) return
+    if (userRole === "viewer" || userRole === "commenter") {
+      toast.error("Bạn không có quyền khôi phục phiên bản lịch sử")
+      return
+    }
     if (!window.confirm(`Bạn có chắc chắn muốn khôi phục tài liệu về Phiên bản ${selectedVersion}?`)) return
     toast.loading("Đang tiến hành khôi phục...", { id: "revert-loading" })
     try {
@@ -722,9 +726,11 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
                 Bạn đang xem bản nháp lịch sử Phiên bản {selectedVersion} (Chỉ xem)
               </span>
               <div className="flex gap-2">
-                <Button size="sm" variant="default" onClick={handleRevert}>
-                  Khôi phục phiên bản này
-                </Button>
+                {userRole && userRole !== "viewer" && (
+                  <Button size="sm" onClick={handleRevert}>
+                    Khôi phục phiên bản này
+                  </Button>
+                )}
                 <Button size="sm" variant="outline" onClick={handleExitPreview}>
                   Thoát xem trước
                 </Button>
@@ -745,7 +751,7 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
             handleRevertRef={handleRevertRef}
           />
         </div>
-        
+
         {/* Sidebar Lịch sử */}
         {isHistoryOpen && (
           <div className="w-80 top-[60px] right-0 fixed border-l border-border bg-white p-4 flex flex-col min-h-[calc(100vh-60px)] max-h-[calc(100vh-60px)] overflow-y-auto shadow-lg z-20">
@@ -758,7 +764,7 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
                 <span className="text-xl">&times;</span>
               </Button>
             </div>
-            
+
             <div className="flex-1 overflow-y-auto space-y-2">
               {isLoadingVersions ? (
                 <div className="text-center py-8 text-gray-500 text-sm">Đang tải lịch sử...</div>
@@ -769,20 +775,19 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
                   // Lấy danh sách tên người chỉnh sửa
                   const editorNames = ver.contributors && ver.contributors.length > 0
                     ? ver.contributors.map((userId: string) => {
-                        const c = collaborators.find(col => col._id === userId);
-                        return c ? (c.username || c.email || "Unknown") : "Unknown";
-                      }).join(", ")
+                      const c = collaborators.find(col => col._id === userId);
+                      return c ? (c.username || c.email || "Unknown") : "Unknown";
+                    }).join(", ")
                     : "Hệ thống";
 
                   return (
                     <div
                       key={ver.version_number}
                       onClick={() => handlePreviewVersion(ver.version_number)}
-                      className={`p-3 rounded-lg border cursor-pointer transition-all ${
-                        selectedVersion === ver.version_number
-                          ? "border-primary bg-primary/5 shadow-sm"
-                          : "border-gray-200 hover:bg-gray-50"
-                      }`}
+                      className={`p-3 rounded-lg border cursor-pointer transition-all ${selectedVersion === ver.version_number
+                        ? "border-primary bg-primary/5 shadow-sm"
+                        : "border-gray-200 hover:bg-gray-50"
+                        }`}
                     >
                       <div className="flex justify-between items-center mb-1">
                         <span className="text-sm font-semibold text-gray-700">
