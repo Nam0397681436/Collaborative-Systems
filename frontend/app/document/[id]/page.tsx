@@ -96,6 +96,9 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
 
   const titleDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const socketRef = useRef<WebSocket | null>(null)
+  // Ref luôn giữ giá trị vectorClock mới nhất, cập nhật đồng bộ (không chờ React re-render)
+  // Giải quyết race condition khi nhiều EDIT message đến liên tiếp
+  const vectorClockPageRef = useRef<VectorClock>({})
 
   const handleRemoteEditRef = useRef<(ops: Operation[], remoteUserId?: string) => void>(() => { })
   // const handleRenderCursorRef = useRef<(cursors: Cursor[]) => void>(() => { })
@@ -109,7 +112,9 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
       if (res.success && res.document) {
         setDocument(res.document)
         setTitle(res.document.title ?? "")
-        setVectorClock(res.document.global_v_clock ?? {})
+        const fetchedClock = res.document.global_v_clock ?? {}
+        vectorClockPageRef.current = fetchedClock
+        setVectorClock(fetchedClock)
         setInitialContent(res.document.content_snapshot ?? "")
         setCurrentClock(res.document.global_v_clock ? res.document.global_v_clock[user.id] || 0 : 0)
       }
@@ -209,8 +214,11 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
             const v_clock = message.v_clock as VectorClock
             setOnlineUsers(message.online_users || [])
             if (Object.keys(v_clock).length > 0) {
-              setVectorClock((prev) => mergeVectorClock(prev, v_clock))
-              setCurrentClock((prev) => Math.max(prev, v_clock[user.id] || 0))
+              const merged = mergeVectorClock(vectorClockPageRef.current, v_clock)
+              vectorClockPageRef.current = merged
+              setVectorClock(merged)
+              const nextClock = Math.max(vectorClockPageRef.current[user.id] ?? 0, v_clock[user.id] ?? 0)
+              setCurrentClock(nextClock)
             }
           }
         }
@@ -272,19 +280,29 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
           const editOps = ops ?? (op ? [op] : [])
           if (editOps.length === 0 || !v_clock) return
           const isOwnEcho = message.user_id === user.id
+
           if (isOwnEcho) {
-            setVectorClock((prev) => mergeVectorClock(prev, v_clock))
+            // Chỉ merge clock cho echo của chính mình, không tăng counter
+            const merged = mergeVectorClock(vectorClockPageRef.current, v_clock)
+            vectorClockPageRef.current = merged
+            setVectorClock(merged)
           } else {
-            setVectorClock((prev) => {
-              const mergedClock = mergeVectorClock(prev, v_clock)
-              const nextClock = Math.max(prev[user.id] ?? 0, mergedClock[user.id] ?? 0) + 1
-              setCurrentClock(nextClock)
-              return { ...mergedClock, [user.id]: nextClock }
-            })
+            // Tính toán clock mới đồng bộ qua ref, KHÔNG dùng functional updater
+            // để tránh side effect (setCurrentClock) bên trong state updater
+            // và tránh stale state khi nhiều message đến liên tiếp
+            const mergedClock = mergeVectorClock(vectorClockPageRef.current, v_clock)
+            const nextClock = Math.max(vectorClockPageRef.current[user.id] ?? 0, mergedClock[user.id] ?? 0) + 1
+            const newVectorClock = { ...mergedClock, [user.id]: nextClock }
+            // Cập nhật ref ngay lập tức để message tiếp theo dùng đúng giá trị mới
+            vectorClockPageRef.current = newVectorClock
+            setVectorClock(newVectorClock)
+            setCurrentClock(nextClock)
           }
+
           try {
             handleRemoteEditRef.current?.(editOps, message.user_id)
           } catch (handlerErr) {
+            console.error("[OT] handleRemoteEdit error:", handlerErr)
           }
         }
 
@@ -363,6 +381,19 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
   const handleCollaboratorsChange = (updated: Collaborator[]) => {
     setDocument((prev) => prev ? { ...prev, collaborators: updated } : prev)
   }
+
+  // Wrapper để đồng bộ vectorClockPageRef khi editor component gọi setVectorClock
+  // (ví dụ: khi local user gửi edit qua sendEditWithClock)
+  const handleSetVectorClock: React.Dispatch<React.SetStateAction<VectorClock>> = useCallback(
+    (value) => {
+      setVectorClock((prev) => {
+        const next = typeof value === "function" ? (value as (p: VectorClock) => VectorClock)(prev) : value
+        vectorClockPageRef.current = next
+        return next
+      })
+    },
+    []
+  )
 
   const isOwner = Boolean(user && document && user.id === document.ownerId)
 
@@ -590,7 +621,7 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
             currentClock={currentClock}
             setCurrentClock={setCurrentClock}
             vectorClock={vectorClock}
-            setVectorClock={setVectorClock}
+            setVectorClock={handleSetVectorClock}
             handleRemoteEditRef={handleRemoteEditRef}
           />
         </div>
