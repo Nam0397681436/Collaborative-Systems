@@ -10,6 +10,7 @@ from app.api.auth import router as auth_router
 from app.api.document import router as document_router
 
 from infra.mongodb.database import connect_to_mongodb, close_mongodb_connection
+from infra.redis.redis_client import RedisClient
 from infra.rabbitmq.rabbit_mq_gateway import (
     connect_to_rabbitmq,
     close_rabbitmq_connection,
@@ -18,20 +19,23 @@ from infra.rabbitmq.rabbit_mq_gateway import (
 
 logging.basicConfig(level=logging.INFO)
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Khởi chạy khi FastAPI start
     await connect_to_mongodb()
     await connect_to_rabbitmq()
-    
+    await RedisClient.connect()
+
     app.state.broadcast_task = asyncio.create_task(listen_for_broadcast())
-    
+
     yield
     # Chạy khi FastAPI shutdown
     if hasattr(app.state, "broadcast_task"):
         app.state.broadcast_task.cancel()
     await close_rabbitmq_connection()
     await close_mongodb_connection()
+
 
 app = FastAPI(title="Collaborative Text Editor API", lifespan=lifespan)
 
@@ -43,7 +47,9 @@ app.add_middleware(
         "http://10.150.60.153:4000",
         "http://192.168.70.101:4000",
         "http://10.150.60.84:4000",
-        "http://10.150.60.38:4000"
+        "http://10.150.60.38:4000",
+        "http://10.150.60.23:4000",
+        "http://10.150.60.116:4000",  # duong
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -55,17 +61,17 @@ app.include_router(auth_router, prefix="/api/auth", tags=["Authentication"])
 app.include_router(document_router, prefix="/api", tags=["Document Management"])
 app.include_router(websocket_router, tags=["WebSockets"])
 
+
 @app.get("/")
 async def root():
     return {"message": "Welcome to Collaborative Text Editor API Server"}
 
+
 async def listen_for_broadcast():
     try:
         channel = get_consumer_channel()
-        exchange=await channel.declare_exchange(
-            name="broadcast_to_room",
-            type="fanout",
-            durable=False
+        exchange = await channel.declare_exchange(
+            name="broadcast_to_room", type="fanout", durable=False
         )
         queue = await channel.declare_queue(exclusive=True)
         await queue.bind(exchange)
@@ -73,11 +79,20 @@ async def listen_for_broadcast():
         async with queue.iterator() as queue_iter:
             async for message in queue_iter:
                 async with message.process():
-                    data = json.loads(message.body.decode('utf-8'))
+                    data = json.loads(message.body.decode("utf-8"))
                     doc_id = data.get("doc_id")
-                    
+                    msg_type = data.get("type")
+
                     # Gửi cho tất cả mọi người trong phòng (bao gồm cả người gõ)
                     from app.api.websocket import connection_manager
+
+                    if msg_type == "JOIN_SYNC_CONTENT":
+                        # gui rieng message "JOIN" cho user vua join
+                        user_id = data.get("user_id")
+                        await connection_manager.send_to_user(doc_id, user_id, data)
+                        logging.info(f"Sync content to user: {user_id}")
+                        continue
+
                     await connection_manager.broadcast_to_room(doc_id, data)
     except asyncio.CancelledError:
         logging.info("Broadcast listener task cancelled.")

@@ -9,9 +9,6 @@ import {
   getDocumentApi,
   updateDocumentTitleApi,
   deleteDocumentApi,
-  addCollaboratorApi,
-  removeCollaboratorApi,
-  updateCollaboratorRoleApi,
   type DocumentItem,
   type Collaborator,
   type DocumentRole,
@@ -35,30 +32,21 @@ import {
   ArrowLeft,
   Share2,
   MoreHorizontal,
-  Star,
   Download,
   History,
-  ChevronDown,
-  Bold,
-  Italic,
-  Underline,
-  List,
-  ListOrdered,
-  AlignLeft,
-  AlignCenter,
-  AlignRight,
-  Link2,
-  Image,
-  Undo,
-  Redo,
   Clock,
   Loader2,
+  ChevronUp,
 } from "lucide-react"
-import { CollaboratorsSidebar } from "@/components/collaborators-sidebar"
 import ShareDialog from "@/components/share-dialog"
-import DocumentContentEditor from "@/components/document-content-editor"
+import DocumentContentEditor, { Cursor, Operation } from "@/components/document-content-editor"
 import { toast } from "sonner"
-
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover"
+import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 
 
 function toSidebarUser(c: Collaborator, color: string, idx: number, isOnline: boolean) {
@@ -72,6 +60,20 @@ function toSidebarUser(c: Collaborator, color: string, idx: number, isOnline: bo
   }
 }
 
+function mergeVectorClock(base: VectorClock, incoming?: VectorClock): VectorClock {
+  const merged: VectorClock = { ...base }
+
+  if (!incoming) {
+    return merged
+  }
+
+  for (const [userId, clock] of Object.entries(incoming)) {
+    merged[userId] = Math.max(merged[userId] ?? 0, clock ?? 0)
+  }
+
+  return merged
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function DocumentEditorPage({ params }: { params: Promise<{ id: string }> }) {
@@ -81,17 +83,25 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
 
   const [document, setDocument] = useState<DocumentItem | null>(null)
   const [title, setTitle] = useState("")
+  const [initialContent, setInitialContent] = useState("")
   const [vectorClock, setVectorClock] = useState<VectorClock>({})
   const [currentClock, setCurrentClock] = useState(0)
   const [isLoading, setIsLoading] = useState(true)
-  const [isStarred, setIsStarred] = useState(false)
+  const [showAllUsers, setShowAllUsers] = useState(false)
   const [isShareDialogOpen, setIsShareDialogOpen] = useState(false)
   const [lastSaved, setLastSaved] = useState<Date | null>(null)
   const [onlineUsers, setOnlineUsers] = useState<any[]>([])
   const [userRole, setUserRole] = useState<string | null>(null)
+  const [remoteCursors, setRemoteCursors] = useState<Cursor[]>([])
 
   const titleDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const socketRef = useRef<WebSocket | null>(null)
+  // Ref luôn giữ giá trị vectorClock mới nhất, cập nhật đồng bộ (không chờ React re-render)
+  // Giải quyết race condition khi nhiều EDIT message đến liên tiếp
+  const vectorClockPageRef = useRef<VectorClock>({})
+
+  const handleRemoteEditRef = useRef<(ops: Operation[], remoteUserId?: string) => void>(() => { })
+  // const handleRenderCursorRef = useRef<(cursors: Cursor[]) => void>(() => { })
 
   // ── Fetch document ────────────────────────────────────────────────────────
   const fetchDocument = useCallback(async () => {
@@ -102,8 +112,11 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
       if (res.success && res.document) {
         setDocument(res.document)
         setTitle(res.document.title ?? "")
-        setVectorClock(res.document.global_v_clock ?? {})
-        setCurrentClock(res.document.global_v_clock ? res.document.global_v_clock[user.id] ?? 0 : 0)
+        const fetchedClock = res.document.global_v_clock ?? {}
+        vectorClockPageRef.current = fetchedClock
+        setVectorClock(fetchedClock)
+        setInitialContent(res.document.content_snapshot ?? "")
+        setCurrentClock(res.document.global_v_clock ? res.document.global_v_clock[user.id] || 0 : 0)
       }
     } catch (err) {
       toast.error("Không tìm thấy tài liệu hoặc bạn không có quyền truy cập")
@@ -152,9 +165,6 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
           role: currentUserRole,
         }
       }))
-      setOnlineUsers((current) =>
-        current.some((u) => u.id === user.id) ? current : [...current, { ...user, isOnline: true }]
-      )
     }
 
     socket.onmessage = (event) => {
@@ -164,11 +174,29 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
           user_id?: string
           online_users?: any[]
           new_role?: string
+          op?: Operation
+          ops?: Operation[]
+          v_clock?: VectorClock
+          left?: number
+          top?: number
+          height?: number
+          width?: number
+          username?: string
+          color?: string
+          new_title?: string
+          text?: string
         }
 
-        console.log("WebSocket message received:", message)
-
         if (!message.type) return
+
+        console.log("Received WS message:", message)
+
+        if (message.type === "TITLE_UPDATE") {
+          if (message.new_title) {
+            setTitle(message.new_title)
+            // toast.info("Tiêu đề đã được cập nhật")
+          }
+        }
 
         if (message.type === "ERROR") {
           // Server rejected join or other error
@@ -181,11 +209,38 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
           return
         }
 
-
         if (message.type === "JOIN") {
           if (message.user_id) {
+            const v_clock = message.v_clock as VectorClock
             setOnlineUsers(message.online_users || [])
+            if (Object.keys(v_clock).length > 0) {
+              const merged = mergeVectorClock(vectorClockPageRef.current, v_clock)
+              vectorClockPageRef.current = merged
+              setVectorClock(merged)
+              const nextClock = Math.max(vectorClockPageRef.current[user.id] ?? 0, v_clock[user.id] ?? 0)
+              setCurrentClock(nextClock)
+            }
           }
+        }
+
+        if (message.type === "JOIN_SYNC_CONTENT") {
+          const { doc_id, text, user_id } = message as { doc_id?: string; text?: string; user_id?: string }
+
+          if (doc_id && doc_id !== document._id) {
+            return
+          }
+
+          const nextText = text ?? ""
+
+          if (doc_id === document._id && user_id && user_id !== user.id) {
+            console.log("Received JOIN_SYNC_CONTENT with text length:", nextText.length)
+          }
+
+          if (text == null) {
+            console.error("Received JOIN_SYNC_CONTENT without text")
+          }
+
+          setInitialContent((current) => (current === nextText ? current : nextText))
         }
 
         if (message.type === "ROLE_UPDATE") {
@@ -201,6 +256,83 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
               setUserRole(message.new_role)
               toast.info(`Vai trò của bạn đã được cập nhật thành ${message.new_role}`)
             }
+          }
+        }
+
+        if (message.type === "CURSOR") {
+          if (!user || message.user_id === user.id) {
+            return
+          }
+          const { index, username, color } = message as { index?: number; username?: string; color?: string }
+          if (index === undefined || index < 0 || !username || !color) {
+            return
+          }
+          setRemoteCursors((current) => {
+            const others = current.filter(c => c.user_id !== message.user_id)
+            const updated = [...others, { user_id: message.user_id!, username, color, index }]
+            return updated
+          }
+          )
+        }
+
+        if (message.type === "EDIT") {
+          const { op, ops, v_clock } = message as { op?: Operation; ops?: Operation[]; v_clock?: VectorClock }
+          const editOps = ops ?? (op ? [op] : [])
+          if (editOps.length === 0 || !v_clock) return
+          const isOwnEcho = message.user_id === user.id
+
+          if (isOwnEcho) {
+            // Chỉ merge clock cho echo của chính mình, không tăng counter
+            const merged = mergeVectorClock(vectorClockPageRef.current, v_clock)
+            vectorClockPageRef.current = merged
+            setVectorClock(merged)
+          } else {
+            // Tính toán clock mới đồng bộ qua ref, KHÔNG dùng functional updater
+            // để tránh side effect (setCurrentClock) bên trong state updater
+            // và tránh stale state khi nhiều message đến liên tiếp
+            const mergedClock = mergeVectorClock(vectorClockPageRef.current, v_clock)
+            const nextClock = Math.max(vectorClockPageRef.current[user.id] ?? 0, mergedClock[user.id] ?? 0) + 1
+            const newVectorClock = { ...mergedClock, [user.id]: nextClock }
+            // Cập nhật ref ngay lập tức để message tiếp theo dùng đúng giá trị mới
+            vectorClockPageRef.current = newVectorClock
+            setVectorClock(newVectorClock)
+            setCurrentClock(nextClock)
+          }
+
+          // Khi text thay đổi độ dài (insert/delete), transform index của tất cả
+          // remote cursors để giữ vị trí đúng:
+          //   - insert tại p  → index >= p thì tăng lên
+          //   - delete tại p  → index nằm trong vùng xóa thì kẹp về p (clamp)
+          //                  → index sau vùng xóa thì giảm xuống
+          // Không adjust cursor của chính người vừa edit (họ sẽ tự gửi CURSOR update)
+          const editorUserId = message.user_id
+          setRemoteCursors((cursors) =>
+            cursors.map((cursor) => {
+              if (cursor.user_id === editorUserId) return cursor
+              let index = cursor.index
+              for (const op of editOps) {
+                const opLen = op.char.length
+                if (op.type === "insert") {
+                  if (op.index <= index) index += opLen
+                } else if (op.type === "delete") {
+                  const opEnd = op.index + opLen
+                  if (opEnd <= index) {
+                    // cursor nằm sau vùng xóa → dịch trái
+                    index -= opLen
+                  } else if (op.index < index) {
+                    // cursor nằm trong vùng bị xóa → kẹp về đầu vùng xóa
+                    index = op.index
+                  }
+                }
+              }
+              return { ...cursor, index: Math.max(0, index) }
+            })
+          )
+
+          try {
+            handleRemoteEditRef.current?.(editOps, message.user_id)
+          } catch (handlerErr) {
+            console.error("[OT] handleRemoteEdit error:", handlerErr)
           }
         }
 
@@ -222,9 +354,9 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
 
         if (message.type === "LEAVE") {
           setOnlineUsers((current) => current.filter((u) => u.id !== message.user_id))
+          setRemoteCursors((current) => current.filter(c => c.user_id !== message.user_id))
         }
       } catch (err) {
-        console.error("Lỗi parse websocket message:", err)
       }
     }
 
@@ -268,7 +400,7 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
   const handleDelete = async () => {
     if (!window.confirm("Bạn có chắc muốn xóa tài liệu này?")) return
     try {
-      await deleteDocumentApi(id)
+      await deleteDocumentApi(id, user?.id ?? "")
       router.push("/dashboard")
     } catch (err) {
       console.error("Lỗi xóa tài liệu:", err)
@@ -280,28 +412,20 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
     setDocument((prev) => prev ? { ...prev, collaborators: updated } : prev)
   }
 
+  // Wrapper để đồng bộ vectorClockPageRef khi editor component gọi setVectorClock
+  // (ví dụ: khi local user gửi edit qua sendEditWithClock)
+  const handleSetVectorClock: React.Dispatch<React.SetStateAction<VectorClock>> = useCallback(
+    (value) => {
+      setVectorClock((prev) => {
+        const next = typeof value === "function" ? (value as (p: VectorClock) => VectorClock)(prev) : value
+        vectorClockPageRef.current = next
+        return next
+      })
+    },
+    []
+  )
+
   const isOwner = Boolean(user && document && user.id === document.ownerId)
-
-  const handleSidebarRoleChange = async (targetUserId: string, role: "editor" | "viewer" | "remove") => {
-    if (!user) return
-    try {
-      if (role === "remove") {
-        const res = await removeCollaboratorApi(id, targetUserId, user.id)
-        if (res.success && res.document) {
-          handleCollaboratorsChange(res.document.collaborators ?? [])
-        }
-        return
-      }
-
-      const res = await updateCollaboratorRoleApi(id, targetUserId, role as DocumentRole, user.id)
-      if (res.success && res.document) {
-        handleCollaboratorsChange(res.document.collaborators ?? [])
-      }
-    } catch (err) {
-      console.error("Lỗi cập nhật quyền cộng tác viên:", err)
-    }
-  }
-
 
   // ── Loading ───────────────────────────────────────────────────────────────
   if (isLoading) {
@@ -369,32 +493,72 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
 
           <div className="flex items-center gap-2">
             {/* Online Users Avatars */}
-            <div className="flex items-center -space-x-2 mr-2">
-              {onlineUsers.slice(0, 3).map((u, i) => (
-                <div
-                  key={u.id}
-                  className="w-8 h-8 rounded-full border-2 border-background flex items-center justify-center text-xs font-medium text-white"
-                  style={{ backgroundColor: u.color }}
-                  title={u.username}
-                >
-                  {u.username.split(" ").map((n: string) => n[0]).join("").slice(0, 2)}
-                </div>
-              ))}
+            <div className="flex items-center space-x-1` mr-2">
+              {
+                !showAllUsers && onlineUsers.slice(0, 3).map((u, i) => (
+                  <div
+                    key={u.id}
+                    className="w-8 h-8 cursor-pointer rounded-full border-2 border-background flex items-center justify-center text-xs font-medium text-white"
+                    style={{ backgroundColor: u.color }}
+                    title={u.username}
+                  >
+                    {u.username.split(" ").map((n: string) => n[0]).join("").slice(0, 2)}
+                  </div>
+                ))
+              }
               {onlineUsers.length > 3 && (
-                <div className="w-8 h-8 rounded-full border-2 border-background bg-muted flex items-center justify-center text-xs font-medium text-muted-foreground">
-                  +{onlineUsers.length - 3}
-                </div>
+                <Popover open={showAllUsers} onOpenChange={setShowAllUsers}>
+                  <PopoverTrigger asChild>
+                    {
+                      onlineUsers.length > 1 && showAllUsers ? (
+                        <div
+                          className="w-8 h-8  cursor-pointer rounded-full border-2 border-background flex items-center justify-center text-xs font-medium bg-muted"
+                        >
+                          <ChevronUp className="w-4 h-4" />
+                        </div>
+                      ) : (
+                        <div
+                          className="w-8 h-8 cursor-pointer rounded-full border-2 border-background flex items-center justify-center text-xs font-medium bg-muted"
+                        >
+                          {`+${onlineUsers.length - 3}`}
+                        </div>
+                      )
+                    }
+                  </PopoverTrigger>
+                  <PopoverContent align="end" className="p-0">
+                    <p className="px-3 pt-3 font-bold">Trực tuyến: {onlineUsers.length}</p>
+                    <ul className="mt-2 space-y-2">
+                      {onlineUsers.map((u) => (
+                        <li className="flex items-center gap-2 hover:bg-muted px-3 py-1 rounded cursor-pointer" key={u.id}>
+                          <div
+                            key={u.id}
+                            className="w-8 h-8 cursor-pointer rounded-full border-2 border-background flex items-center justify-center text-xs font-medium text-white"
+                            style={{ backgroundColor: u.color }}
+                            title={u.username}
+                          >
+                            {u.username.split(" ").map((n: string) => n[0]).join("").slice(0, 2)}
+                          </div>
+                          <div>
+                            <p className="text-sm font-medium">{u.username}</p>
+                            <p className="text-xs text-muted-foreground">{u.email}</p>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                    <div className="p-3 pt-0"></div>
+                  </PopoverContent>
+                </Popover>
               )}
             </div>
 
-            <Button
+            {/* <Button
               variant="ghost"
               size="icon"
               onClick={() => setIsStarred(!isStarred)}
               className={isStarred ? "text-owner" : ""}
             >
               <Star className={`w-5 h-5 ${isStarred ? "fill-owner" : ""}`} />
-            </Button>
+            </Button> */}
 
             <Dialog open={isShareDialogOpen} onOpenChange={setIsShareDialogOpen}>
               <DialogTrigger asChild>
@@ -440,7 +604,7 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
         </div>
 
         {/* Toolbar */}
-        <div className="flex items-center gap-1 px-4 py-2 border-t border-border overflow-x-auto">
+        {/* <div className="flex items-center gap-1 px-4 py-2 border-t border-border overflow-x-auto">
           <Button variant="ghost" size="icon" className="h-8 w-8"><Undo className="w-4 h-4" /></Button>
           <Button variant="ghost" size="icon" className="h-8 w-8"><Redo className="w-4 h-4" /></Button>
           <div className="w-px h-6 bg-border mx-1" />
@@ -472,21 +636,23 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
           <div className="w-px h-6 bg-border mx-1" />
           <Button variant="ghost" size="icon" className="h-8 w-8"><Link2 className="w-4 h-4" /></Button>
           <Button variant="ghost" size="icon" className="h-8 w-8"><Image className="w-4 h-4" /></Button>
-        </div>
+        </div> */}
       </header>
 
       {/* Main Content */}
       <div className="">
         {/* Editor */}
-        <div className={`w-[calc(100vw-20rem)] overflow-auto p-2`}>
+        <div className={`w-full overflow-auto p-2`}>
           <DocumentContentEditor
+            remoteCursors={remoteCursors}
             editable={userRole ? userRole !== "viewer" : false}
-            initialContent={document.content_snapshot ?? ""}
+            initialContent={initialContent}
             socket={socketRef.current}
             currentClock={currentClock}
             setCurrentClock={setCurrentClock}
             vectorClock={vectorClock}
-            setVectorClock={setVectorClock}
+            setVectorClock={handleSetVectorClock}
+            handleRemoteEditRef={handleRemoteEditRef}
           />
         </div>
       </div>

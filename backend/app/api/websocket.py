@@ -2,26 +2,54 @@ import json
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from model.connection_socket import connection_manager
 from infra.rabbitmq.rabbit_mq_gateway import RabbitMQProducer, get_routing_key
+from infra.redis.redis_client import RedisClient
+from infra.mongodb.database import get_db
+from bson import ObjectId
 import logging
-logger=logging.getLogger("app.websocket")
+
+logger = logging.getLogger("app.websocket")
 
 router = APIRouter()
+
 
 @router.websocket("/ws/{doc_id}/{user_id}")
 async def websocket_endpoint(websocket: WebSocket, doc_id: str, user_id: str):
     """
     Endpoint xử lý kết nối WebSocket cho từng document
     """
-    await connection_manager.connect(websocket, doc_id)
+    await connection_manager.connect(websocket, doc_id, user_id)
 
     try:
+        redis_client = RedisClient.get_client()
         while True:
             data = await websocket.receive_json()
-            msg_type= data.get("type")
+            msg_type = data.get("type")
 
             if msg_type == "JOIN":
-                user = data.get("user",{})
+                user = data.get("user", {})
                 connection_manager.add_user(doc_id, user)
+
+                v_clock = {}
+                try:
+                    # Lấy phần tử mới nhất ở đầu danh sách Redis (index 0)
+                    cached_ops = await redis_client.lrange(
+                        f"doc_history:{doc_id}", 0, 0
+                    )
+                    if cached_ops:
+                        last_op = json.loads(cached_ops[0])
+                        v_clock = last_op.get("v_clock", {})
+                    else:
+                        # Fallback về MongoDB nếu cache bị rỗng (Cache Miss)
+                        db = get_db()
+                        doc = await db["documents"].find_one({"_id": ObjectId(doc_id)})
+                        if doc:
+                            v_clock = {
+                                str(k): int(v)
+                                for k, v in doc.get("global_v_clock", {}).items()
+                            }
+                except Exception as e:
+                    logger.error(f"Error getting v_clock: {e}")
+
                 await connection_manager.broadcast_to_room(
                     doc_id,
                     {
@@ -29,37 +57,62 @@ async def websocket_endpoint(websocket: WebSocket, doc_id: str, user_id: str):
                         "doc_id": doc_id,
                         "user_id": user_id,
                         "online_users": connection_manager.get_online_users(doc_id),
+                        "v_clock": v_clock,
                     },
                 )
-            
+                await RabbitMQProducer().publish(
+                    message=json.dumps(
+                        {
+                            "type": "JOIN",
+                            "doc_id": doc_id,
+                            "user_id": user_id,
+                            "v_clock": v_clock,
+                        }
+                    ),
+                    exchange="ot_exchange",
+                    routing_key=get_routing_key(doc_id, num_queue=1),
+                )
+
             elif msg_type == "CURSOR":
-                await connection_manager.broadcast_to_room(
-                    doc_id, 
-                    {
-                        "type":"CURSOR",
-                        "user_id": user_id,
-                        "pos": data.get("pos")
-                    }
-                    )
+                user_info = connection_manager.active_users.get(doc_id, {}).get(
+                    user_id, {}
+                )
+                index = data.get("index")
+
+                if index is None:
+                    logger.warning(f"Invalid CURSOR payload from {user_id}: {data}")
+                    continue
+
+                cursor_msg = {
+                    "type": "CURSOR",
+                    "user_id": user_id,
+                    "username": user_info.get("username", "Unknown"),
+                    "color": user_info.get("color", "#000000"),
+                    "index": index,
+                }
+                await connection_manager.broadcast_to_room(doc_id, cursor_msg)
             elif msg_type == "EDIT":
-                payload={
+                payload = {
                     "type": "EDIT",
-                    "id": doc_id,
-                    "user_id":user_id,
-                    "op": data.get("op"), # Ví dụ: {type: 'insert', char: 'A', index: 10}
-                    "version":data.get("version",None),
-                    "v_clock":data.get("v_clock",None)
+                    "doc_id": doc_id,
+                    "user_id": user_id,
+                    "op": data.get(
+                        "op"
+                    ),  # Ví dụ: {type: 'insert', char: 'A', index: 10}
+                    "version": data.get("version", None),
+                    "v_clock": data.get("v_clock", None),
                 }
 
                 # push len RabbitMq
-                routing_key=get_routing_key(doc_id,num_queue=1)
+                logger.info("payload: %s", payload)
+                routing_key = get_routing_key(doc_id, num_queue=1)
                 await RabbitMQProducer().publish(
                     message=json.dumps(payload),
                     exchange="ot_exchange",
-                    routing_key=routing_key
+                    routing_key=routing_key,
                 )
-                logger.info(f"User {user_id} sent edit operation: {data.get('op')}")
-
+                # logger.info(f"User {user_id} sent edit operation: {data.get('op')}")
+                # logger.info(f"payload: {payload}\n---000---\n")
             elif msg_type == "LEAVE":
                 break
 
@@ -76,5 +129,6 @@ async def websocket_endpoint(websocket: WebSocket, doc_id: str, user_id: str):
                 "online_users": connection_manager.get_online_users(doc_id),
             },
         )
+
 
 # Năm
