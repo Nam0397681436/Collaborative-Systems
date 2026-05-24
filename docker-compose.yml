@@ -1,0 +1,121 @@
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq
+    restart: unless-stopped
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      - RABBITMQ_DEFAULT_USER=nam.dev
+      - RABBITMQ_DEFAULT_PASS=Nam12345@
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - network_infra
+    healthcheck:
+      test: rabbitmq-diagnostics -q ping
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7.0
+    container_name: redis
+    restart: unless-stopped
+    command: redis-server --requirepass Nam12345@
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data/redis
+    networks:
+      - network_infra
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: redis-commander
+    restart: unless-stopped
+    environment:
+      - REDIS_HOSTS=local:redis:6379:0:Nam12345@
+    ports:
+      - "8086:8081"
+    networks:
+      - network_infra
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: backend-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - RABBITMQ_HOST=rabbitmq
+      - REDIS_URL=redis://:Nam12345%40@redis:6379/0
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - network_infra
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: backend-worker
+    restart: unless-stopped
+    command: python app/worker/consumer.py
+    env_file:
+      - .env
+    environment:
+      - RABBITMQ_HOST=rabbitmq
+      - REDIS_URL=redis://:Nam12345%40@redis:6379/0
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - network_infra
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000/api}
+    container_name: frontend
+    restart: unless-stopped
+    ports:
+      - "4000:4000"
+    depends_on:
+      - backend
+    networks:
+      - network_infra
+
+volumes:
+  rabbitmq_data:
+  redis_data:
+
+networks:
+  network_infra:
+    name: network_infra 
+    driver: bridge
