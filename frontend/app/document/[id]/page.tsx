@@ -713,7 +713,7 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
       </header>
 
       {/* Main Content */}
-      <div className="flex flex-row flex-1 w-full overflow-hidden relative" style={{ height: "calc(100vh - 60px)" }}>
+      <div className={`flex flex-row flex-1 ${isHistoryOpen ? 'w-[calc(100%-20rem)]' : 'w-full'} overflow-hidden relative`} style={{ height: "calc(100vh - 60px)" }}>
         {/* Editor */}
         <div className="flex-1 overflow-auto p-2 flex flex-col">
           {selectedVersion !== null && (
@@ -748,7 +748,7 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
         
         {/* Sidebar Lịch sử */}
         {isHistoryOpen && (
-          <div className="w-80 border-l border-border bg-white p-4 flex flex-col h-full overflow-y-auto shadow-lg z-20">
+          <div className="w-80 top-[60px] right-0 fixed border-l border-border bg-white p-4 flex flex-col min-h-[calc(100vh-60px)] max-h-[calc(100vh-60px)] overflow-y-auto shadow-lg z-20">
             <div className="flex justify-between items-center mb-4">
               <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
                 <History className="w-5 h-5 text-primary" />
