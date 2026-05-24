@@ -194,6 +194,8 @@ async def main():
         await queue.bind(exchange, routing_key=queue_name)
         logger.info(f"Binding and consuming from {queue_name}...")
 
+        # Đảm bảo xử lý tuần tự từng message để tránh xung đột OT
+        await channel.set_qos(prefetch_count=1)
         # Gắn hàm process_message của class worker vào queue
         await queue.consume(worker.process_message)
 
