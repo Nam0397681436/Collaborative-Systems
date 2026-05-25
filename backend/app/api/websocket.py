@@ -121,13 +121,25 @@ async def websocket_endpoint(websocket: WebSocket, doc_id: str, user_id: str):
         logger.info(f"User {user_id} disconnected")
     finally:
         await connection_manager.disconnect(websocket, doc_id, user_id)
+
+        # kiểm tra xem còn ai trong phòng không
+        remaining_users = connection_manager.get_online_users(doc_id)
+        if not remaining_users:
+            # nếu không còn ai trong phòng thì lưu nội dung vào mongodb
+            logger.info(f"Room {doc_id} is empty. Triggering save to MongoDB...")
+            from app.core.snapshot_text import save_snapshot_text, get_snapshot_text
+
+            # lấy nội dung trên redis rồi lưu vào mongodb
+            text = await get_snapshot_text(doc_id)
+            await save_snapshot_text(doc_id, text)
+
         await connection_manager.broadcast_to_room(
             doc_id,
             {
                 "type": "LEAVE",
                 "doc_id": doc_id,
                 "user_id": user_id,
-                "online_users": connection_manager.get_online_users(doc_id),
+                "online_users": remaining_users,
             },
         )
 
