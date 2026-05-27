@@ -22,6 +22,7 @@ export interface DocumentItem {
   content_snapshot?: string
   created_at?: string
   updated_at?: string
+  epoch?: number
 }
 
 export interface DocumentApiResponse {

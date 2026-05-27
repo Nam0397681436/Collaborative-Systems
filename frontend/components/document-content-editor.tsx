@@ -226,22 +226,109 @@ function buildOpsFromTextDiff(prevText: string, nextText: string): Operation[] {
     return operations
 }
 
-function transformUndoStack(remoteOp: Operation, localUndoStack: Operation[]) {
-    for (let i = 0; i < localUndoStack.length; i++) {
-        const localOp = localUndoStack[i]
-        if (remoteOp.type === 'insert') {
-            // Nếu người khác chèn text ở phía trước vị trí của mình, đẩy vị trí của mình lui về sau
-            if (remoteOp.index <= localOp.index) {
-                localUndoStack[i] = { ...localOp, index: localOp.index + remoteOp.char.length }
+function transformUndoStack(remoteOp: Operation, localUndoStack: Operation[][]) {
+    const transformEntryOp = (op: Operation): Operation[] => {
+        if (remoteOp.type === "insert") {
+            const insertLen = remoteOp.char.length
+
+            if (remoteOp.index <= op.index) {
+                return [{ ...op, index: op.index + insertLen }]
             }
-        } else if (remoteOp.type === 'delete') {
-            // Nếu người khác xóa text ở phía trước vị trí của mình, kéo vị trí của mình tiến lên trước
-            if (remoteOp.index < localOp.index) {
-                const intersection = Math.min(remoteOp.char.length, localOp.index - remoteOp.index)
-                localUndoStack[i] = { ...localOp, index: localOp.index - intersection }
+
+            // Remote insert nằm giữa range delete local -> tách thành nhiều thao tác delete rời.
+            if (op.type === "delete") {
+                const opStart = op.index
+                const opEnd = op.index + op.char.length
+                if (remoteOp.index > opStart && remoteOp.index < opEnd) {
+                    const splitAt = remoteOp.index - opStart
+                    const left = op.char.slice(0, splitAt)
+                    const right = op.char.slice(splitAt)
+                    const next: Operation[] = []
+
+                    if (right.length > 0) {
+                        next.push({
+                            ...op,
+                            char: right,
+                            index: remoteOp.index + insertLen,
+                        })
+                    }
+
+                    if (left.length > 0) {
+                        next.push({
+                            ...op,
+                            char: left,
+                            index: opStart,
+                        })
+                    }
+
+                    return next
+                }
+            }
+
+            return [op]
+        }
+
+        const deleteStart = remoteOp.index
+        const deleteEnd = remoteOp.index + remoteOp.char.length
+        const opStart = op.index
+        const opEnd = op.index + op.char.length
+
+        if (deleteEnd <= opStart) {
+            return [{ ...op, index: op.index - remoteOp.char.length }]
+        }
+
+        if (deleteStart >= opEnd) {
+            return [op]
+        }
+
+        // Có overlap với op delete local: cắt phần bị remote xóa rồi giữ phần còn lại.
+        if (op.type === "delete") {
+            const overlapStart = Math.max(opStart, deleteStart)
+            const overlapEnd = Math.min(opEnd, deleteEnd)
+            const overlapLen = Math.max(0, overlapEnd - overlapStart)
+
+            const leftKeepLen = Math.max(0, overlapStart - opStart)
+            const rightKeepLen = Math.max(0, opEnd - overlapEnd)
+
+            const leftKeep = op.char.slice(0, leftKeepLen)
+            const rightKeep = rightKeepLen > 0 ? op.char.slice(op.char.length - rightKeepLen) : ""
+            const remain = leftKeep + rightKeep
+
+            if (remain.length === 0) {
+                return []
+            }
+
+            const shiftedIndex = opStart - Math.max(0, Math.min(remoteOp.char.length, opStart - deleteStart))
+
+            if (overlapLen > 0) {
+                return [{ ...op, char: remain, index: shiftedIndex }]
             }
         }
+
+        return [op]
     }
+
+    for (let i = 0; i < localUndoStack.length; i++) {
+        const entry = localUndoStack[i]
+        const nextEntry: Operation[] = []
+
+        for (const op of entry) {
+            nextEntry.push(...transformEntryOp(op))
+        }
+
+        localUndoStack[i] = nextEntry
+    }
+
+    // Loại bỏ entry rỗng sau khi transform
+    for (let i = localUndoStack.length - 1; i >= 0; i--) {
+        if (localUndoStack[i].length === 0) {
+            localUndoStack.splice(i, 1)
+        }
+    }
+}
+
+function invertUndoEntry(entry: Operation[]): Operation[] {
+    return [...entry].reverse().map(invertOp)
 }
 
 function transformCaretAfterOperation(caret: number, op: Operation): number {
@@ -290,9 +377,27 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
     const editorTextRef = useRef("")
     const isNormalizingDomRef = useRef(false)
 
-    const undoStackRef = useRef<Operation[]>([])
-    const redoStackRef = useRef<Operation[]>([])
+    const undoStackRef = useRef<Operation[][]>([])
+    const redoStackRef = useRef<Operation[][]>([])
     const undoRedoOpIdsRef = useRef<Set<string>>(new Set()) // track op ids gửi bởi undo/redo, tránh echo từ server push trùng vào undoStack
+
+    const MAX_UNDO_REDO = 10
+
+    const pushUndo = (ops: Operation | Operation[]) => {
+        const normalized = Array.isArray(ops) ? ops : [ops]
+        if (normalized.length === 0) return
+        const stack = undoStackRef.current
+        stack.push(normalized)
+        if (stack.length > MAX_UNDO_REDO) stack.shift()
+    }
+
+    const pushRedo = (ops: Operation | Operation[]) => {
+        const normalized = Array.isArray(ops) ? ops : [ops]
+        if (normalized.length === 0) return
+        const stack = redoStackRef.current
+        stack.push(normalized)
+        if (stack.length > MAX_UNDO_REDO) stack.shift()
+    }
 
     const pendingOpsRef = useRef<Array<{ op: Operation; userId: string; opId: string }>>([])
     const isComposingRef = useRef(false)
@@ -1190,24 +1295,34 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
                 }
                 batchBaseTextRef.current = null
 
-                const lastOp = undoStackRef.current.pop()
-                if (lastOp && editorRef.current) {
+                const lastUndoEntry = undoStackRef.current.pop()
+                if (lastUndoEntry && lastUndoEntry.length > 0 && editorRef.current) {
                     const caretBeforeUndo = getCaretOffset(editorRef.current)
-                    const newText = applyOp(editorTextRef.current, lastOp)
+                    let newText = editorTextRef.current
+                    for (const op of lastUndoEntry) {
+                        newText = applyOp(newText, op)
+                    }
                     // Wrap bằng isNormalizingDomRef để tránh input event kích scheduleBatch
                     isNormalizingDomRef.current = true
                     renderEditorText(editorRef.current, newText)
                     isNormalizingDomRef.current = false
                     editorTextRef.current = newText
-                    redoStackRef.current.push(invertOp(lastOp))
-                    restoreCaret(transformCaretAfterOperation(caretBeforeUndo, lastOp))
+                    pushRedo(invertUndoEntry(lastUndoEntry))
+
+                    let caretAfterUndo = caretBeforeUndo
+                    for (const op of lastUndoEntry) {
+                        caretAfterUndo = transformCaretAfterOperation(caretAfterUndo, op)
+                    }
+                    restoreCaret(caretAfterUndo)
                     sendCursorPosition()
 
-                    // Tạo opId MỚI cho undo op — không dùng lại opId gốc
-                    // (server có thể reject nếu thấy opId đã xử lý rồi)
-                    const undoOp = { ...lastOp }
-                    undoRedoOpIdsRef.current.add(undoOp.opId!)
-                    sendEditWithClockRef.current(undoOp)
+                    // Tạo opId mới cho từng op undo trong entry.
+                    for (const undoOp of lastUndoEntry) {
+                        if (undoOp.opId) {
+                            undoRedoOpIdsRef.current.add(undoOp.opId)
+                        }
+                        sendEditWithClockRef.current(undoOp)
+                    }
                 }
             }
 
@@ -1221,23 +1336,34 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
                 }
                 batchBaseTextRef.current = null
 
-                const lastOp = redoStackRef.current.pop()
-                if (lastOp && editorRef.current) {
+                const lastRedoEntry = redoStackRef.current.pop()
+                if (lastRedoEntry && lastRedoEntry.length > 0 && editorRef.current) {
                     const caretBeforeRedo = getCaretOffset(editorRef.current)
-                    const newText = applyOp(editorTextRef.current, lastOp)
+                    let newText = editorTextRef.current
+                    for (const op of lastRedoEntry) {
+                        newText = applyOp(newText, op)
+                    }
                     // Wrap bằng isNormalizingDomRef để tránh input event kích scheduleBatch
                     isNormalizingDomRef.current = true
                     renderEditorText(editorRef.current, newText)
                     isNormalizingDomRef.current = false
                     editorTextRef.current = newText
-                    undoStackRef.current.push(invertOp(lastOp))
-                    restoreCaret(transformCaretAfterOperation(caretBeforeRedo, lastOp))
+                    pushUndo(invertUndoEntry(lastRedoEntry))
+
+                    let caretAfterRedo = caretBeforeRedo
+                    for (const op of lastRedoEntry) {
+                        caretAfterRedo = transformCaretAfterOperation(caretAfterRedo, op)
+                    }
+                    restoreCaret(caretAfterRedo)
                     sendCursorPosition()
 
-                    // Tạo opId MỚI cho redo op
-                    const redoOp = { ...lastOp }
-                    undoRedoOpIdsRef.current.add(redoOp.opId!)
-                    sendEditWithClockRef.current(redoOp)
+                    // Tạo opId mới cho từng op redo trong entry.
+                    for (const redoOp of lastRedoEntry) {
+                        if (redoOp.opId) {
+                            undoRedoOpIdsRef.current.add(redoOp.opId)
+                        }
+                        sendEditWithClockRef.current(redoOp)
+                    }
                 }
             }
         }
@@ -1316,7 +1442,7 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
                     }
                 }
                 if (!undoRedoOpIdsRef.current.has(op.opId ?? '')) {
-                    undoStackRef.current.push(invertOp(op))
+                    pushUndo(invertOp(op))
                 } else {
                     // Cleanup: op này là echo của undo/redo, bỏ qua và xóa khỏi tracking set
                     undoRedoOpIdsRef.current.delete(op.opId ?? '')
@@ -1354,6 +1480,7 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
             if (op.index < -1) continue
             text = applyOp(text, op)
             transformUndoStack(op, undoStackRef.current)
+            transformUndoStack(op, redoStackRef.current)
         }
 
         // Bước 4: redo pending ops, transform qua TẤT CẢ server ops
@@ -1431,6 +1558,9 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
                 }
             }
         }
+
+        // Sau khi remote edit làm dịch caret local, phát lại CURSOR để các user khác thấy vị trí mới.
+        sendCursorPosition()
     }, [user, indexToNodeOffset, flushCompositionIfNeeded])
 
     useEffect(() => {
