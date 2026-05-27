@@ -1,16 +1,55 @@
-# Collaborative Systems - Hệ thống Soạn thảo Văn bản Cộng tác theo Thời gian thực
+<div align="center">
+  <h1>📝 Collaborative Systems</h1>
+  <p><strong>Hệ thống Soạn thảo Văn bản Cộng tác theo Thời gian thực</strong></p>
+  <p>
+    Một nền tảng chỉnh sửa tài liệu đa người dùng hiệu năng cao (tương tự Google Docs), 
+    <br/>giải quyết bài toán xung đột dữ liệu với thuật toán Operational Transformation (OT).
+  </p>
+  
+  [![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org)
+  [![Next.js](https://img.shields.io/badge/Next.js-16-black)](https://nextjs.org/)
+  [![FastAPI](https://img.shields.io/badge/FastAPI-005571?style=flat&logo=fastapi)](https://fastapi.tiangolo.com/)
+  [![RabbitMQ](https://img.shields.io/badge/RabbitMQ-FF6600?style=flat&logo=rabbitmq&logoColor=white)](https://www.rabbitmq.com/)
+  [![MongoDB](https://img.shields.io/badge/MongoDB-4EA94B?style=flat&logo=mongodb&logoColor=white)](https://www.mongodb.com/)
+  [![Redis](https://img.shields.io/badge/Redis-DC382D?style=flat&logo=redis&logoColor=white)](https://redis.io/)
+</div>
 
-Dự án này là một **Hệ thống Soạn thảo Văn bản Cộng tác theo Thời gian thực (Real-time Collaborative Text Editor)** có kiến trúc tương tự như Google Docs. Hệ thống sử dụng thuật toán **Centralized Operational Transformation (OT)** nhằm giải quyết xung đột khi nhiều người dùng cùng chỉnh sửa một tài liệu tại một thời điểm, kết hợp với hạ tầng phân tán để đạt hiệu năng tối ưu và tính nhất quán dữ liệu cao.
+<hr />
 
-Dự án được tổ chức dưới dạng monorepo gồm 2 phần chính:
-*   **`backend`**: Xây dựng bằng FastAPI (Python), RabbitMQ, Redis và MongoDB.
-*   **`frontend`**: Xây dựng bằng Next.js (App Router, React 19), Tailwind CSS và TypeScript.
+## 📖 Mục Lục (Table of Contents)
+- [🌟 Tổng Quan Dự Án](#-tổng-quan-dự-án)
+- [✨ Tính Năng Nổi Bật](#-tính-năng-nổi-bật)
+- [🏗️ Kiến Trúc & Thiết Kế Hệ Thống](#-kiến-trúc--thiết-kế-hệ-thống)
+- [💻 Công Nghệ Sử Dụng](#-công-nghệ-sử-dụng)
+- [🚀 Hướng Dẫn Cài Đặt (Getting Started)](#-hướng-dẫn-cài-đặt-getting-started)
+- [📂 Cấu Trúc Dự Án](#-cấu-trúc-dự-án)
+- [🧪 Kiểm Thử (Testing)](#-kiểm-thử-testing)
+- [🤝 Đóng Góp (Contributing)](#-đóng-góp-contributing)
+- [👥 Người Đóng Góp (Contributors)](#-người-đóng-góp-contributors)
 
 ---
 
-## 🏗️ Tổng quan Kiến trúc Hệ thống
+## 🌟 Tổng Quan Dự Án
 
-Hệ thống hoạt động theo cơ chế luồng sự kiện thời gian thực (Event-Driven Architecture):
+**Collaborative Systems** là một hệ thống biên tập tài liệu cộng tác cho phép nhiều người dùng cùng chỉnh sửa một văn bản tại cùng một thời điểm. 
+
+Dự án áp dụng thuật toán **Centralized Operational Transformation (OT)** và **Vector Clocks** nhằm duy trì tính nhất quán tuyệt đối của tài liệu, bất chấp độ trễ mạng hay thao tác đồng thời. Bằng việc tách rời REST API/WebSockets Server và OT Worker qua hệ thống Message Broker (RabbitMQ), hệ thống đạt được tính ổn định và khả năng mở rộng ngang (Horizontal Scaling) vô cùng mạnh mẽ.
+
+---
+
+## ✨ Tính Năng Nổi Bật
+
+- ⚡ **Đồng bộ thời gian thực siêu thấp (Ultra-low Latency):** Thay đổi văn bản được đồng bộ tới tất cả client với tốc độ tính bằng mili-giây qua WebSockets.
+- 👥 **Quản lý Hiện diện (Presence) & Con trỏ độc lập (Live Cursors):** Hiển thị danh sách người dùng Online/Offline và theo dõi chuyển động con trỏ chuột của từng cá nhân kèm màu sắc nhận diện riêng biệt.
+- 🔐 **Hệ thống Phân quyền Linh hoạt (RBAC):** Chủ sở hữu (Owner) có thể cấp quyền `Viewer` (Chỉ xem) hoặc `Editor` (Chỉnh sửa). Mọi thay đổi quyền được cập nhật ngay lập tức (Real-time).
+- 🎨 **Giao diện Cao cấp (Modern UI/UX):** Trải nghiệm người dùng tuyệt vời với phong cách thiết kế Glassmorphism, hỗ trợ giao diện Sáng/Tối (Dark/Light mode) dựa trên Tailwind CSS v4 & Shadcn/UI.
+- 🛡️ **Bảo mật JWT & Protected Routes:** Đảm bảo quyền riêng tư và xác thực bảo mật cho mọi tài liệu cá nhân.
+
+---
+
+## 🏗️ Kiến Trúc & Thiết Kế Hệ Thống
+
+Hệ thống được thiết kế theo hướng sự kiện (Event-Driven Architecture). Mọi thao tác gõ (Operations) đều được định tuyến qua cơ chế **Consistent Hashing** theo ID tài liệu (Document ID) vào RabbitMQ để đảm bảo việc xử lý luồng thao tác luôn diễn ra **tuần tự nghiêm ngặt (Strict Ordering)**, tránh tranh chấp đa luồng.
 
 ```mermaid
 graph TD
@@ -26,121 +65,117 @@ graph TD
     
     Worker -->|6. Broadcast Synced Op| Exchange[RabbitMQ Fanout Exchange]
     Exchange -->|7. Distribute| API
+
 ```
 
-### Nguyên lý Hoạt động của Hệ thống OT:
-1. **Gửi Thao tác (Operations)**: Khi người dùng gõ phím (Insert/Delete/Retain), frontend sẽ đóng gói thao tác kèm theo **Đồng hồ Vector (Vector Clock)** của client hiện tại và gửi lên API Server qua kết nối WebSocket.
-2. **Xếp hàng & Điều phối**: API Server đẩy các thao tác vào **RabbitMQ**. Sử dụng thuật toán **Consistent Hashing** dựa trên `doc_id`, các thao tác của cùng một tài liệu luôn được định tuyến đến cùng một Queue để xử lý tuần tự (Strict Ordering), tránh tranh chấp đa luồng.
-3. **Biến đổi Thao tác (Operational Transformation)**: **OT Worker** tiêu thụ thông điệp từ Queue, kiểm tra tính nhân quả qua Vector Clock. Nếu phát hiện xung đột (xảy ra khi hai người dùng cùng gõ đồng thời), Worker sẽ áp dụng ma trận OT để biến đổi lại các chỉ số con trỏ (Index Shifting) và đưa ra trạng thái tài liệu hợp nhất chính xác.
-4. **Cập nhật & Phát sóng (Broadcast)**: Trạng thái mới được ghi nhận cực nhanh vào **Redis Cache** (phục vụ lịch sử OT gần nhất) và lưu trữ lâu dài trong **MongoDB**. Cuối cùng, Worker phát tín hiệu broadcast qua RabbitMQ Fanout Exchange để API Server gửi thông tin cập nhật tức thời về cho toàn bộ các client đang truy cập tài liệu đó.
+### Thuật toán cốt lõi:
+- **Operational Transformation (OT 3x3 Matrix):** Xử lý ma trận biến đổi toán học khi các thao tác `Insert`, `Delete`, `Retain` diễn ra cùng lúc trên một index.
+- **Tie-breaker:** Cơ chế phân xử logic khi hai người dùng cùng thao tác đè lên một vị trí, đảm bảo sự hội tụ (Convergence) của tài liệu trên tất cả các Client.
 
 ---
 
-## 🛠️ Công Nghệ Sử Dụng (Tech Stack)
+## 💻 Công Nghệ Sử Dụng
 
-### Backend
-*   **FastAPI**: Framework Python có hiệu suất cực cao dựa trên AsyncIO.
-*   **MongoDB**: Cơ sở dữ liệu NoSQL lưu trữ thông tin Document, User và Operation Logs.
-*   **RabbitMQ**: Message Broker đảm nhận điều phối hàng đợi thao tác và phát sóng sự kiện.
-*   **Redis**: In-memory database làm cache tốc độ cao cho Lịch sử OT và quản lý khóa phân tán.
-*   **Pytest**: Framework phục vụ viết unit test và tích hợp để bảo chứng thuật toán OT.
+### 🌐 Frontend (Client-side)
+- **Framework Core:** Next.js 16 (App Router), React 19
+- **Ngôn ngữ:** TypeScript
+- **Styling & UI:** Tailwind CSS v4.0, Shadcn/UI, Lucide React
+- **Networking:** Axios (với JWT interceptor), Native WebSockets
 
-### Frontend
-*   **Next.js 16 (App Router)**: Framework React mạnh mẽ cho việc tối ưu render và routing.
-*   **React 19 & TypeScript**: Xây dựng UI an toàn về kiểu dữ liệu (Type-safe).
-*   **Tailwind CSS & Shadcn/UI**: Hệ thống styling và bộ thành phần giao diện hiện đại, responsive, hỗ trợ Dark/Light Mode.
-*   **WebSockets**: Duy trì kết nối hai chiều thời gian thực giữa Client và API Server.
-
----
-
-## 📂 Cấu Trúc Dự Án
-
-```text
-Collaborative-Systems/
-├── backend/            # Mã nguồn Backend (FastAPI, OT Worker, Infrastructure)
-│   ├── app/
-│   │   ├── api/        # REST API & WebSocket Controller
-│   │   ├── core/       # Thuật toán OT cốt lõi (3x3 Matrix)
-│   │   ├── models/     # Schema Models (Pydantic)
-│   │   └── worker/     # RabbitMQ Consumer & Worker xử lý OT
-│   ├── infra/          # MongoDB, Redis & RabbitMQ Gateways
-│   ├── tests/          # Unit tests cho thuật toán OT
-│   └── docker-compose.yml # File cấu hình hạ tầng container
-│
-├── frontend/           # Mã nguồn Frontend (Next.js, Tailwind, React 19)
-│   ├── app/            # Next.js App Router (Landing, Auth, Dashboard, Editor)
-│   ├── components/     # UI Components (Collaborator list, Share dialog, Editor canvas)
-│   ├── hooks/          # Custom React hooks
-│   └── lib/            # Auth Context, Axios Clients và API services
-│
-└── README.md           # Hướng dẫn tổng quan hệ thống (File này)
-```
+### ⚙️ Backend (Server-side)
+- **Framework Core:** FastAPI (Python 3.11+), Uvicorn (ASGI)
+- **Message Broker:** RabbitMQ (`aio-pika`)
+- **Database:** MongoDB (`motor` async driver)
+- **Caching:** Redis (`redis.asyncio`)
+- **Testing:** Pytest
 
 ---
 
-## 🚀 Hướng Dẫn Khởi Chạy Nhanh (Quick Start)
+## 🚀 Hướng Dẫn Cài Đặt (Getting Started)
 
-Yêu cầu máy cài sẵn: **Docker & Docker Compose**, **Node.js (v18+)**, **Python (v3.11+)**.
+### Yêu Cầu Môi Trường
+- **Docker & Docker Compose** (Bắt buộc cho Infrastructure)
+- **Node.js** (v18+)
+- **Python** (v3.11+)
 
-### 1. Chạy Hạ Tầng (Docker)
-
-Khởi động các container MongoDB, Redis, RabbitMQ:
+### 1. Khởi động Cơ sở hạ tầng (Infrastructure)
+Dự án cung cấp sẵn tệp Docker Compose để chạy MongoDB, Redis, RabbitMQ và các giao diện quản trị trực quan.
 ```bash
 cd backend
 docker-compose up -d
 ```
 
-### 2. Thiết lập và Chạy Backend
+> **🎛️ Bảng Điều Khiển Hạ Tầng (Management Dashboards):**
+> - 🐰 **RabbitMQ Management:** [http://localhost:15672](http://localhost:15672) *(Tài khoản: `nam.dev` / Mật khẩu: `Nam12345@`)*
+> - 🍃 **Mongo Express (MongoDB UI):** [http://localhost:8085](http://localhost:8085) *(Tài khoản: `admin` / Mật khẩu: `admin`)*
+> - 🔴 **Redis Commander (Redis UI):** [http://localhost:8086](http://localhost:8086)
 
-Mở terminal mới tại thư mục `backend/`:
+### 2. Thiết lập Backend Server & OT Worker
+Mở **2 cửa sổ Terminal mới** tại thư mục `backend/`.
 
-1.  Tạo và kích hoạt môi trường ảo:
-    ```bash
-    python -m venv venv
-    # Windows
-    .\venv\Scripts\activate
-    # macOS/Linux
-    source venv/bin/activate
-    ```
-2.  Cài đặt các thư viện phụ thuộc:
-    ```bash
-    pip install -r requirements.txt
-    ```
-3.  Cấu hình môi trường: Tạo file `.env` từ `.env.example` và cấu hình các thông số kết nối Database, Redis, RabbitMQ.
-4.  Chạy **FastAPI Server**:
-    ```bash
-    uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-    ```
-5.  Mở terminal khác (đã kích hoạt `venv`) chạy **OT Worker**:
-    ```bash
-    python -m app.worker.consumer
-    ```
+**Terminal 1: Chạy API Server**
+```bash
+python -m venv venv
+# Windows: .\venv\Scripts\activate | macOS/Linux: source venv/bin/activate
+pip install -r requirements.txt
 
-### 3. Thiết lập và Chạy Frontend
+# Tạo file .env từ .env.example
+# Khởi chạy server API
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
 
-Mở một terminal mới tại thư mục `frontend/`:
+**Terminal 2: Chạy OT Worker**
+```bash
+# Kích hoạt môi trường ảo (venv) trước
+# Windows: .\venv\Scripts\activate | macOS/Linux: source venv/bin/activate
+python -m app.worker.consumer
+```
 
-1.  Cài đặt các gói thư viện:
-    ```bash
-    npm install
-    # Hoặc sử dụng pnpm
-    pnpm install
-    ```
-2.  Cấu hình môi trường: Tạo file `.env` với nội dung trỏ tới API Backend:
-    ```env
-    NEXT_PUBLIC_API_BASE_URL=http://localhost:8000/api
-    ```
-3.  Khởi chạy chế độ phát triển (Development):
-    ```bash
-    npm run dev
-    ```
-    Frontend sẽ chạy tại địa chỉ: [http://localhost:4000](http://localhost:4000)
+> 💡 *Mẹo (Scale-out): Bạn có thể chạy song song nhiều OT Worker để chia tải (Horizontal Scaling) bằng cách điều chỉnh cấu hình `RABBITMQ_NUM_QUEUES` và biến môi trường `WORKER_QUEUES`. Xem hướng dẫn chi tiết tại [backend/readme.md](backend/readme.md).*
+
+### 3. Thiết lập Frontend Next.js
+Mở Terminal mới tại thư mục `frontend/`:
+```bash
+npm install
+# Khởi tạo biến môi trường (.env)
+echo "NEXT_PUBLIC_API_BASE_URL=http://localhost:8000/api" > .env
+# Chạy ứng dụng Frontend
+npm run dev
+```
+🎉 **Trải nghiệm ứng dụng tại:** [http://localhost:4000](http://localhost:4000)
 
 ---
 
-## 🧪 Chạy Kiểm Thử (Testing)
+## 📂 Cấu Trúc Dự Án
 
-Để đảm bảo thuật toán OT hoạt động chính xác và không xảy ra hiện tượng lệch con trỏ văn bản (Index Shifting), hãy chạy bộ test suite trên Backend:
+Kiến trúc Monorepo được chia ranh giới rõ ràng:
+
+```text
+Collaborative-Systems/
+├── backend/                  # Logic xử lý thuật toán & API Backend
+│   ├── app/api/              # Routes cho REST API & WebSockets
+│   ├── app/core/             # Thuật toán cốt lõi (OT, Vector Clock)
+│   ├── app/models/           # Pydantic Schemas (Data Validation)
+│   ├── app/worker/           # RabbitMQ Consumer (Xử lý tác vụ ngầm)
+│   ├── infra/                # Repository Pattern giao tiếp DB, Cache, MQ
+│   └── tests/                # Unit Tests (Pytest)
+│
+├── benchmarks/               # Các kịch bản kiểm thử tải (Load Testing) và đo lường hiệu năng
+│   └── locustfile.py         # Kịch bản kiểm thử với Locust cho OT Worker và API
+|
+└── frontend/                 # Giao diện người dùng
+    ├── app/                  # Next.js App Router (Pages, Layouts)
+    ├── components/ui/        # Shadcn Primitives (Button, Dialog, ...)
+    ├── components/           # Core components (Editor, Sidebar, ...)
+    ├── hooks/                # React Hooks tùy chỉnh
+    └── lib/                  # Utilities, API Axios instances, Auth Context
+```
+
+---
+
+## 🧪 Kiểm Thử (Testing)
+
+Đảm bảo độ chính xác tuyệt đối của bộ biến đổi OT (Index Shifting) bằng cách chạy Unit Tests trên Backend:
 ```bash
 cd backend
 python -m pytest tests/
@@ -148,11 +183,31 @@ python -m pytest tests/
 
 ---
 
-## 🛡️ Tính Năng Nổi Bật Đã Hoàn Thành
-- **Real-time Synchronization**: Đồng bộ tức thì nội dung gõ phím giữa nhiều tab/trình duyệt.
-- **Collaborator Sidebar**: Danh sách người dùng trực tuyến/ngoại tuyến trong phòng kèm chỉ thị màu cursor độc bản.
-- **Role & Authorization**: Phân quyền chi tiết (Owner, Editor, Viewer) cho từng tài liệu.
-- **Share Dialog**: Chia sẻ liên kết soạn thảo, tìm kiếm và phân quyền cộng tác viên linh hoạt.
-- **Dark/Light Mode**: Thiết kế giao diện hiện đại tối ưu trải nghiệm người dùng ban đêm.
+## 🤝 Đóng Góp (Contributing)
 
-Gặp bất kỳ vấn đề gì trong quá trình cài đặt, vui lòng kiểm tra file log của backend hoặc tab Console trên trình duyệt frontend. Chúc bạn có trải nghiệm cộng tác tuyệt vời!
+Dự án luôn hoan nghênh sự đóng góp từ cộng đồng. Quy trình đóng góp tiêu chuẩn:
+1. **Fork** dự án này về tài khoản của bạn.
+2. Tạo **Branch** cho tính năng/bản vá: `git checkout -b feature/AmazingFeature`
+3. **Commit** thay đổi của bạn: `git commit -m 'Add some AmazingFeature'`
+4. **Push** lên Branch: `git push origin feature/AmazingFeature`
+5. Mở một **Pull Request** trên Repository gốc và mô tả chi tiết thay đổi của bạn.
+
+*(Vui lòng tuân thủ các quy chuẩn định dạng code: PEP8 cho Python và ESLint/Prettier cho Next.js).*
+
+---
+
+## 👥 Người Đóng Góp (Contributors)
+
+Dự án này được phát triển, cống hiến và bảo trì bởi sự phối hợp của các thành viên tài năng:
+
+<a href="https://github.com/Nam0397681436/Collaborative-Systems/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=Nam0397681436/Collaborative-Systems" alt="Contributors list" />
+</a>
+
+*Bạn muốn đóng góp? Hãy xem mục **[Đóng Góp](#-đóng-góp-contributing)**!*
+
+---
+
+<div align="center">
+  <p>Được xây dựng với ❤️ bởi cộng đồng lập trình viên Việt Nam.</p>
+</div>
