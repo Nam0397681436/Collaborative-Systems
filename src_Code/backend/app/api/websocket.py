@@ -36,22 +36,13 @@ async def websocket_endpoint(websocket: WebSocket, doc_id: str, user_id: str):
 
                 v_clock = {}
                 try:
-                    # Lấy phần tử mới nhất ở đầu danh sách Redis (index 0)
-                    cached_ops = await redis_client.lrange(
-                        f"doc_history:{doc_id}", 0, 0
-                    )
-                    if cached_ops:
-                        last_op = json.loads(cached_ops[0])
-                        v_clock = last_op.get("v_clock", {})
-                    else:
-                        # Fallback về MongoDB nếu cache bị rỗng (Cache Miss)
-                        db = get_db()
-                        doc = await db["documents"].find_one({"_id": ObjectId(doc_id)})
-                        if doc:
-                            v_clock = {
-                                str(k): int(v)
-                                for k, v in doc.get("global_v_clock", {}).items()
-                            }
+                    db = get_db()
+                    doc = await db["documents"].find_one({"_id": ObjectId(doc_id)})
+                    if doc:
+                        v_clock = {
+                            str(k): int(v)
+                            for k, v in doc.get("global_v_clock", {}).items()
+                        }
                 except Exception as e:
                     logger.error(f"Error getting v_clock: {e}")
 

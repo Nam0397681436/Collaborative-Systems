@@ -190,21 +190,6 @@ async def get_doc(docId: str, requesterId: str | None = Query(default=None)):
     if not docs:
         raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu")
     document_data = docs[0]
-    # Lấy operation mới nhất từ Redis để cập nhật global_v_clock mới nhất
-    redis_client = RedisClient.get_client()
-    try:
-        cached_ops = await redis_client.lrange(f"doc_history:{docId}", 0, 0)
-        if cached_ops:
-            import json
-
-            last_op = json.loads(cached_ops[0])
-            v_clock = last_op.get("v_clock")
-            if v_clock and isinstance(v_clock, dict):
-                document_data["global_v_clock"] = {
-                    str(k): int(v) for k, v in v_clock.items()
-                }
-    except Exception as e:
-        logger.error(f"Lỗi khi lấy v_clock từ Redis: {e}")
     return {"success": True, "document": document_data}
 
 
@@ -569,8 +554,8 @@ async def revert_doc_to_version(
         raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu")
     if not requesterId:
         raise HTTPException(status_code=403, detail="Không có quyền truy cập")
-        
-    #TODO: Phân quyền Editor & Viewer
+
+    # TODO: Phân quyền Editor & Viewer
     is_owner = str(doc.get("ownerId")) == str(requesterId)
     is_collaborator = any(
         str(collab.get("user_id")) == str(requesterId)
