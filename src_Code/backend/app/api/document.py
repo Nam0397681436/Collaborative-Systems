@@ -1,4 +1,5 @@
 import logging
+import json
 from bson import ObjectId
 from fastapi import APIRouter, HTTPException, Query
 from datetime import datetime
@@ -6,6 +7,9 @@ from model.enum_user_role import UserRole
 from app.api.database import get_db, close_db
 from model.connection_socket import connection_manager
 from infra.redis.redis_client import RedisClient
+from infra.mongodb.repository.operation_repo import OperationRepository
+from infra.rabbitmq.rabbit_mq_gateway import RabbitMQProducer
+import json
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -172,6 +176,7 @@ async def get_doc(docId: str, requesterId: str | None = Query(default=None)):
                 "title": {"$first": "$title"},
                 "ownerId": {"$first": "$ownerId"},
                 "content_snapshot": {"$first": "$content_snapshot"},
+                "epoch": {"$first": "$epoch"},
                 "created_at": {"$first": "$created_at"},
                 "updated_at": {"$first": "$updated_at"},
                 "collaborators": {"$push": "$collaborators"},
@@ -186,21 +191,6 @@ async def get_doc(docId: str, requesterId: str | None = Query(default=None)):
     if not docs:
         raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu")
     document_data = docs[0]
-    # Lấy operation mới nhất từ Redis để cập nhật global_v_clock mới nhất
-    redis_client = RedisClient.get_client()
-    try:
-        cached_ops = await redis_client.lrange(f"doc_history:{docId}", 0, 0)
-        if cached_ops:
-            import json
-
-            last_op = json.loads(cached_ops[0])
-            v_clock = last_op.get("v_clock")
-            if v_clock and isinstance(v_clock, dict):
-                document_data["global_v_clock"] = {
-                    str(k): int(v) for k, v in v_clock.items()
-                }
-    except Exception as e:
-        logger.error(f"Lỗi khi lấy v_clock từ Redis: {e}")
     return {"success": True, "document": document_data}
 
 
@@ -414,7 +404,7 @@ async def remove_collaborator(
             },
         )
     except Exception as e:
-        print.error(f"Lỗi khi broadcast xóa cộng tác viên cho document {docId}: {e}")
+        logger.error(f"Lỗi khi broadcast xóa cộng tác viên cho document {docId}: {e}")
 
     return {"success": True, "document": updated_doc}
 
@@ -481,7 +471,7 @@ async def update_collaborator_role(docId: str, collaboratorId: str, dataReq: dic
             },
         )
     except Exception as e:
-        print.error(f"Lỗi khi broadcast cập nhật role cho document {docId}: {e}")
+        logger.error(f"Lỗi khi broadcast cập nhật role cho document {docId}: {e}")
 
     return {"success": True, "document": updated_doc}
 
@@ -508,8 +498,6 @@ async def get_doc_versions(docId: str):
     """
     Lấy toàn bộ danh sách các checkpoint phiên bản của tài liệu.
     """
-    from infra.mongodb.repository.operation_repo import OperationRepository
-
     try:
         checkpoints = await OperationRepository.get_checkpoints(docId)
         return {"success": True, "versions": checkpoints}
@@ -524,9 +512,6 @@ async def get_doc_version_preview(docId: str, version_number: int):
     """
     Phục dựng nội dung phiên bản lịch sử cụ thể (Checkpoint).
     """
-    from infra.mongodb.repository.operation_repo import OperationRepository
-    from datetime import datetime
-
     try:
         checkpoint = await OperationRepository.get_checkpoint_by_version(
             docId, version_number
@@ -563,12 +548,6 @@ async def revert_doc_to_version(
     Khôi phục tài liệu về một phiên bản lịch sử cụ thể (Epoch Versioning).
     Ghi đè MongoDB, dọn cache Redis, tăng epoch và broadcast sự kiện REVERT qua RabbitMQ.
     """
-    from infra.mongodb.repository.operation_repo import OperationRepository
-    from datetime import datetime
-    from infra.redis.redis_client import RedisClient
-    from infra.rabbitmq.rabbit_mq_gateway import RabbitMQProducer
-    import json
-
     db = get_db()
     # Kiểm tra quyền sở hữu hoặc cộng tác viên
     doc = await db.documents.find_one({"_id": ObjectId(docId)})
@@ -577,6 +556,7 @@ async def revert_doc_to_version(
     if not requesterId:
         raise HTTPException(status_code=403, detail="Không có quyền truy cập")
 
+    # TODO: Phân quyền Editor & Viewer
     is_owner = str(doc.get("ownerId")) == str(requesterId)
     is_collaborator = any(
         str(collab.get("user_id")) == str(requesterId)

@@ -5,9 +5,10 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.websocket import router as websocket_router
+from app.api.websocket import router as websocket_router, connection_manager
 from app.api.auth import router as auth_router
 from app.api.document import router as document_router
+from model.connection_socket import connection_manager
 
 from infra.mongodb.database import connect_to_mongodb, close_mongodb_connection
 from infra.redis.redis_client import RedisClient
@@ -84,8 +85,6 @@ async def listen_for_broadcast():
                     msg_type = data.get("type")
 
                     # Gửi cho tất cả mọi người trong phòng (bao gồm cả người gõ)
-                    from app.api.websocket import connection_manager
-
                     if msg_type == "JOIN_SYNC_CONTENT":
                         # gui rieng message "JOIN" cho user vua join
                         user_id = data.get("user_id")

@@ -3,8 +3,18 @@ import asyncio
 import json
 import logging
 from pydantic import TypeAdapter
+from dotenv import load_dotenv
 
-from infra.mongodb.database import connect_to_mongodb, close_mongodb_connection
+load_dotenv()
+
+from infra.mongodb.database import connect_to_mongodb, close_mongodb_connection, get_db
+from bson import ObjectId
+from infra.mongodb.database import (
+    connect_to_mongodb,
+    close_mongodb_connection,
+    get_db,
+)
+from bson import ObjectId
 from infra.rabbitmq.rabbit_mq_gateway import (
     RabbitMQProducer,
     connect_to_rabbitmq,
@@ -41,9 +51,6 @@ class OTWorker:
                 client_v_clock = payload.get("v_clock", {})
                 text = await get_snapshot_text(doc_id)
                 if text is None:
-                    from infra.mongodb.database import get_db
-                    from bson import ObjectId
-
                     db = get_db()
                     if db is not None:
                         doc = await db["documents"].find_one({"_id": ObjectId(doc_id)})
@@ -81,8 +88,6 @@ class OTWorker:
             client_epoch = payload.get("epoch", 0)
 
             # Epoch Versioning Validation
-            from infra.mongodb.database import get_db
-            from bson import ObjectId
             db = get_db()
             doc = await db["documents"].find_one({"_id": ObjectId(doc_id)})
             if not doc:
@@ -98,9 +103,11 @@ class OTWorker:
                 revert_payload = {
                     "type": "REVERT",
                     "doc_id": doc_id,
-                    "v_clock": {str(k): int(v) for k, v in doc.get("global_v_clock", {}).items()},
+                    "v_clock": {
+                        str(k): int(v) for k, v in doc.get("global_v_clock", {}).items()
+                    },
                     "epoch": server_epoch,
-                    "content": doc.get("content_snapshot", "")
+                    "content": doc.get("content_snapshot", ""),
                 }
                 await self.producer.publish(
                     message=json.dumps(revert_payload),
@@ -125,7 +132,9 @@ class OTWorker:
                 return
 
             # 2. Causality Check & Transform
-            history_ops_data = await OperationRepository.get_recent_history(doc_id, server_epoch)
+            history_ops_data = await OperationRepository.get_recent_history(
+                doc_id, server_epoch
+            )
             history_ops_data.reverse()
 
             history_ops_ascending = []
