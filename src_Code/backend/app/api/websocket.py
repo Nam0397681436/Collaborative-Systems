@@ -39,22 +39,14 @@ async def websocket_endpoint(websocket: WebSocket, doc_id: str, user_id: str):
 
                 v_clock = {}
                 try:
-                    # Lấy phần tử mới nhất ở đầu danh sách Redis (index 0)
-                    cached_ops = await redis_client.lrange(
-                        f"doc_history:{doc_id}", 0, 0
-                    )
-                    if cached_ops:
-                        last_op = json.loads(cached_ops[0])
-                        v_clock = last_op.get("v_clock", {})
-                    else:
-                        # Fallback về MongoDB nếu cache bị rỗng (Cache Miss)
-                        db = get_db()
-                        doc = await db["documents"].find_one({"_id": ObjectId(doc_id)})
-                        if doc:
-                            v_clock = {
-                                str(k): int(v)
-                                for k, v in doc.get("global_v_clock", {}).items()
-                            }
+                    # Fallback về MongoDB nếu cache bị rỗng (Cache Miss)
+                    db = get_db()
+                    doc = await db["documents"].find_one({"_id": ObjectId(doc_id)})
+                    if doc:
+                        v_clock = {
+                            str(k): int(v)
+                            for k, v in doc.get("global_v_clock", {}).items()
+                        }
                 except Exception as e:
                     logger.error(f"Error getting v_clock: {e}")
 
@@ -111,7 +103,6 @@ async def websocket_endpoint(websocket: WebSocket, doc_id: str, user_id: str):
                     "v_clock": data.get("v_clock", None),
                     "epoch": data.get("epoch", 0),
                 }
-
                 # push len RabbitMq
                 logger.info("payload: %s", payload)
                 routing_key = get_routing_key(doc_id, num_queue=num_queues)

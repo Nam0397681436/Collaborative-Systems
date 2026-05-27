@@ -117,6 +117,9 @@ function invertOp(op: Operation): Operation {
 
 // Transform op `b` dựa trên op `a` đã được apply trước
 function transformAfter(b: Operation, a: Operation, bUserId: string, aUserId: string): Operation {
+    // Guard: retain ops (từ server OT khi delete bị triệt tiêu) không có char/index → không cần transform
+    if (!a.char || !b.char) return b
+
     const aLen = a.char.length
 
     if (a.type === "insert" && b.type === "insert") {
@@ -1475,8 +1478,9 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
             text = applyOp(text, inv)
         }
 
-        // Bước 3: apply TẤT CẢ server ops lên text sạch
-        for (const op of ops) {
+        // Bước 3: apply TẤT CẢ server ops lên text sạch (bỏ qua retain ops từ server OT)
+        const validOps = ops.filter(op => op.char !== undefined && op.index !== undefined)
+        for (const op of validOps) {
             if (op.index < -1) continue
             text = applyOp(text, op)
             transformUndoStack(op, undoStackRef.current)
@@ -1487,7 +1491,7 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
         const serverId = remoteUserId ?? ""
         let transformedPending = pending.map(p => p.op)
 
-        for (const serverOp of ops) {
+        for (const serverOp of validOps) {
             transformedPending = transformOpsArray(transformedPending, serverOp, user.id, serverId)
         }
 
@@ -1516,7 +1520,7 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
 
         // Bước 6: khôi phục caret của local user, điều chỉnh theo TẤT CẢ server ops
         let restoredCaret = localCaretBefore
-        for (const op of ops) {
+        for (const op of validOps) {
             const opLen = op.char.length
             if (op.type === "insert") {
                 if (op.index <= restoredCaret) {
@@ -1575,7 +1579,7 @@ const DocumentContentEditor: React.FC<DocumentContentEditorProps> = ({
         undoStackRef.current = []
         redoStackRef.current = []
         undoRedoOpIdsRef.current.clear()
-        
+
         // Reset DOM text
         if (editorRef.current) {
             renderEditorText(editorRef.current, content)

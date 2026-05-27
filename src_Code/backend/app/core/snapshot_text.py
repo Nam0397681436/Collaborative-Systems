@@ -74,8 +74,7 @@ async def perform_checkpoint(doc_id: str, snapshot_text: str):
 
         # 1. Lưu snapshot đè xuống documents chính
         await db["documents"].update_one(
-            {"_id": ObjectId(doc_id)},
-            {"$set": {"content_snapshot": snapshot_text}}
+            {"_id": ObjectId(doc_id)}, {"$set": {"content_snapshot": snapshot_text}}
         )
 
         # 2. Đọc global_v_clock và epoch hiện tại để lưu Checkpoint
@@ -85,18 +84,24 @@ async def perform_checkpoint(doc_id: str, snapshot_text: str):
             epoch = doc.get("epoch", 0)
             # Lấy danh sách contributors từ Redis
             redis_client = RedisClient.get_client()
-            contributors_raw = await redis_client.smembers(f"snapshot_contributors:{doc_id}")
+            contributors_raw = await redis_client.smembers(
+                f"snapshot_contributors:{doc_id}"
+            )
             contributors = []
             if contributors_raw:
                 for c in contributors_raw:
-                    contributors.append(c.decode("utf-8") if isinstance(c, bytes) else str(c))
-            
+                    contributors.append(
+                        c.decode("utf-8") if isinstance(c, bytes) else str(c)
+                    )
+
             await redis_client.delete(f"snapshot_contributors:{doc_id}")
 
             # Chuẩn hóa v_clock keys sang string
             formatted_v_clock = {str(k): int(v) for k, v in v_clock.items()}
             # Tạo checkpoint
-            await OperationRepository.create_checkpoint(doc_id, formatted_v_clock, epoch, snapshot_text, contributors)
+            await OperationRepository.create_checkpoint(
+                doc_id, formatted_v_clock, epoch, snapshot_text, contributors
+            )
             logger.info(f"Checkpoint successfully performed for doc {doc_id}")
     except Exception as e:
         logger.error(f"Failed to perform checkpoint for doc {doc_id}: {e}")
@@ -112,7 +117,7 @@ async def debounced_checkpoint_task(doc_id: str, trigger_time: str):
         redis_client = RedisClient.get_client()
         last_modified_key = f"snapshot_last_modified:{doc_id}"
         count_key = f"snapshot_count:{doc_id}"
-        
+
         current_time = await redis_client.get(last_modified_key)
         # Nếu thời gian sửa đổi cuối cùng trùng khớp, nghĩa là không có thao tác gõ chữ mới trong 5 giây qua
         if current_time == trigger_time:
@@ -123,7 +128,9 @@ async def debounced_checkpoint_task(doc_id: str, trigger_time: str):
                 current_count = await redis_client.get(count_key)
                 # Chỉ lưu nếu có thay đổi chưa được sync (bộ đếm > 0)
                 if current_count and int(current_count) > 0:
-                    logger.info(f"Debounce triggered: Doc {doc_id} has been idle for 10s. Performing checkpoint...")
+                    logger.info(
+                        f"Debounce triggered: Doc {doc_id} has been idle for 10s. Performing checkpoint..."
+                    )
                     await perform_checkpoint(doc_id, snapshot_text)
                     await redis_client.set(count_key, 0)
     except Exception as e:
