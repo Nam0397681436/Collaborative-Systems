@@ -209,5 +209,14 @@ Dự án này được phát triển, cống hiến và bảo trì bởi sự ph
 ---
 
 <div align="center">
+  <h3>🌟 Star History</h3>
+  <a href="https://star-history.com/#Nam0397681436/Collaborative-Systems&Date">
+    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=Nam0397681436/Collaborative-Systems&type=Date" />
+  </a>
+</div>
+
+<br/>
+
+<div align="center">
   <p>Được xây dựng với ❤️ bởi cộng đồng lập trình viên Việt Nam.</p>
 </div>
