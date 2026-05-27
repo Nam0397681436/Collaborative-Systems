@@ -66,11 +66,25 @@ class OperationRepository:
         # Lưu vào MongoDB
         await db["operation_logs"].insert_one(transaction_doc)
         
-        # Atomic update Vector Clock
-        await db["documents"].update_one(
-            {"_id": ObjectId(doc_id)},
-            {"$inc": {f"global_v_clock.{user_id}": 1}}
-        )
+        # Atomic update Vector Clock (Tăng cho TẤT CẢ mọi người)
+        doc_info = await db["documents"].find_one({"_id": ObjectId(doc_id)}, {"global_v_clock": 1})
+        current_global_clock = doc_info.get("global_v_clock", {})
+        
+        inc_payload = {}
+        # Tạo lệnh cộng 1 cho tất cả user đang có trong tài liệu
+        for uid in current_global_clock.keys():
+            inc_payload[f"global_v_clock.{uid}"] = 1
+            
+        # Nếu user hiện tại vừa join chưa có tên trong sổ, đảm bảo họ cũng được cộng
+        if user_id not in inc_payload:
+            inc_payload[f"global_v_clock.{user_id}"] = 1
+            
+        # Update nguyên tử 1 lần duy nhất cho toàn bộ payload
+        if inc_payload:
+            await db["documents"].update_one(
+                {"_id": ObjectId(doc_id)},
+                {"$inc": inc_payload}
+            )
         
         # Push vào Redis Cache & Cắt mảng (LTRIM)
         redis_client = RedisClient.get_client()
