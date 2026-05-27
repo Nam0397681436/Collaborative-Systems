@@ -68,7 +68,8 @@ class OperationRepository:
         
         # Atomic update Vector Clock (Tăng cho TẤT CẢ mọi người)
         doc_info = await db["documents"].find_one({"_id": ObjectId(doc_id)}, {"global_v_clock": 1})
-        current_global_clock = doc_info.get("global_v_clock", {})
+        current_global_clock = doc_info.get("global_v_clock", {}) if doc_info else {}
+        logger.info(f"[VectorClock] Trước cập nhật - doc_id: {doc_id}, user_id: {user_id}, global_v_clock: {current_global_clock}")
         
         inc_payload = {}
         # Tạo lệnh cộng 1 cho tất cả user đang có trong tài liệu
@@ -85,6 +86,11 @@ class OperationRepository:
                 {"_id": ObjectId(doc_id)},
                 {"$inc": inc_payload}
             )
+            
+        # Lấy lại clock mới sau khi cập nhật để log
+        updated_doc = await db["documents"].find_one({"_id": ObjectId(doc_id)}, {"global_v_clock": 1})
+        new_global_clock = updated_doc.get("global_v_clock", {}) if updated_doc else {}
+        logger.info(f"[VectorClock] Sau cập nhật - doc_id: {doc_id}, user_id: {user_id}, global_v_clock: {new_global_clock}")
         
         # Push vào Redis Cache & Cắt mảng (LTRIM)
         redis_client = RedisClient.get_client()
