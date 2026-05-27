@@ -1,6 +1,8 @@
 from fastapi import WebSocket
 from typing import Dict, List,Any
 import logging
+import colorsys
+import hashlib
 
 logger=logging.getLogger("app.connection_manager")
 
@@ -63,9 +65,6 @@ class ConnectionManager:
     
     def create_random_color(self, seed: str) -> str:
         """Tạo màu ổn định từ seed, tối vừa đủ để chữ trắng dễ đọc."""
-        import colorsys
-        import hashlib
-
         digest = hashlib.sha256(seed.encode("utf-8")).digest()
 
         hue = int.from_bytes(digest[:2], "big") / 65535.0

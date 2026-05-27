@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.websocket import router as websocket_router
+from app.api.websocket import router as websocket_router, connection_manager
 from app.api.auth import router as auth_router
 from app.api.document import router as document_router
 from model.connection_socket import connection_manager

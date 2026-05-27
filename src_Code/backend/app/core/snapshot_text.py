@@ -2,10 +2,12 @@ import os
 import asyncio
 import json
 import logging
+import time
 
 from infra.mongodb.database import get_db
 from infra.redis.redis_client import RedisClient
 from bson import ObjectId
+from infra.mongodb.repository.operation_repo import OperationRepository
 
 
 logger = logging.getLogger(__name__)
@@ -38,7 +40,6 @@ async def save_snapshot_text(doc_id: str, payload: dict) -> str:
         await redis_client.set(cache_key, new_snapshot)
 
         # 2. Cập nhật thời gian sửa đổi gần nhất lên Redis (để Debounce Flush)
-        import time
         current_time = str(time.time())
         last_modified_key = f"snapshot_last_modified:{doc_id}"
         await redis_client.set(last_modified_key, current_time)
@@ -80,7 +81,6 @@ async def perform_checkpoint(doc_id: str, snapshot_text: str):
         # 2. Đọc global_v_clock và epoch hiện tại để lưu Checkpoint
         doc = await db["documents"].find_one({"_id": ObjectId(doc_id)})
         if doc:
-            from infra.mongodb.repository.operation_repo import OperationRepository
             v_clock = doc.get("global_v_clock", {})
             epoch = doc.get("epoch", 0)
             # Lấy danh sách contributors từ Redis

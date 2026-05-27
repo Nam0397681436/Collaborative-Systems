@@ -9,6 +9,9 @@ from model.connection_socket import connection_manager
 from infra.rabbitmq.rabbit_mq_gateway import RabbitMQProducer, get_routing_key
 from infra.redis.redis_client import RedisClient
 from infra.mongodb.database import get_db
+from bson import ObjectId
+import logging
+from app.core.snapshot_text import save_snapshot_text, get_snapshot_text
 
 logger = logging.getLogger("app.websocket")
 
@@ -132,7 +135,6 @@ async def websocket_endpoint(websocket: WebSocket, doc_id: str, user_id: str):
         if not remaining_users:
             # nếu không còn ai trong phòng thì lưu nội dung vào mongodb
             logger.info(f"Room {doc_id} is empty. Triggering save to MongoDB...")
-            from app.core.snapshot_text import save_snapshot_text, get_snapshot_text
 
             # lấy nội dung trên redis rồi lưu vào mongodb
             text = await get_snapshot_text(doc_id)

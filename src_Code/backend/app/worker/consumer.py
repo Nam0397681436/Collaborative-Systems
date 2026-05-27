@@ -9,6 +9,12 @@ load_dotenv()
 
 from infra.mongodb.database import connect_to_mongodb, close_mongodb_connection, get_db
 from bson import ObjectId
+from infra.mongodb.database import (
+    connect_to_mongodb,
+    close_mongodb_connection,
+    get_db,
+)
+from bson import ObjectId
 from infra.rabbitmq.rabbit_mq_gateway import (
     RabbitMQProducer,
     connect_to_rabbitmq,
@@ -97,9 +103,11 @@ class OTWorker:
                 revert_payload = {
                     "type": "REVERT",
                     "doc_id": doc_id,
-                    "v_clock": {str(k): int(v) for k, v in doc.get("global_v_clock", {}).items()},
+                    "v_clock": {
+                        str(k): int(v) for k, v in doc.get("global_v_clock", {}).items()
+                    },
                     "epoch": server_epoch,
-                    "content": doc.get("content_snapshot", "")
+                    "content": doc.get("content_snapshot", ""),
                 }
                 await self.producer.publish(
                     message=json.dumps(revert_payload),
@@ -124,7 +132,9 @@ class OTWorker:
                 return
 
             # 2. Causality Check & Transform
-            history_ops_data = await OperationRepository.get_recent_history(doc_id, server_epoch)
+            history_ops_data = await OperationRepository.get_recent_history(
+                doc_id, server_epoch
+            )
             history_ops_data.reverse()
 
             history_ops_ascending = []
