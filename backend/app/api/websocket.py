@@ -1,13 +1,18 @@
 import json
+import logging
+import os
+
+from bson import ObjectId
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+
 from model.connection_socket import connection_manager
 from infra.rabbitmq.rabbit_mq_gateway import RabbitMQProducer, get_routing_key
 from infra.redis.redis_client import RedisClient
 from infra.mongodb.database import get_db
-from bson import ObjectId
-import logging
 
 logger = logging.getLogger("app.websocket")
+
+num_queues = int(os.getenv("RABBITMQ_NUM_QUEUES", "1"))
 
 router = APIRouter()
 
@@ -70,7 +75,7 @@ async def websocket_endpoint(websocket: WebSocket, doc_id: str, user_id: str):
                         }
                     ),
                     exchange="ot_exchange",
-                    routing_key=get_routing_key(doc_id, num_queue=1),
+                    routing_key=get_routing_key(doc_id, num_queue=num_queues),
                 )
 
             elif msg_type == "CURSOR":
@@ -106,7 +111,7 @@ async def websocket_endpoint(websocket: WebSocket, doc_id: str, user_id: str):
 
                 # push len RabbitMq
                 logger.info("payload: %s", payload)
-                routing_key = get_routing_key(doc_id, num_queue=1)
+                routing_key = get_routing_key(doc_id, num_queue=num_queues)
                 await RabbitMQProducer().publish(
                     message=json.dumps(payload),
                     exchange="ot_exchange",
