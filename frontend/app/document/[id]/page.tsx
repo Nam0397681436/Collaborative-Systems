@@ -339,6 +339,7 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
             const newVectorClock = { ...mergedClock, [user.id]: nextClock }
             // Cập nhật ref ngay lập tức để message tiếp theo dùng đúng giá trị mới
             vectorClockPageRef.current = newVectorClock
+            console.log("New vector clock (remote):", newVectorClock)
             setVectorClock(newVectorClock)
             setCurrentClock(nextClock)
           }
@@ -430,11 +431,9 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
   // (ví dụ: khi local user gửi edit qua sendEditWithClock)
   const handleSetVectorClock: React.Dispatch<React.SetStateAction<VectorClock>> = useCallback(
     (value) => {
-      setVectorClock((prev) => {
-        const next = typeof value === "function" ? (value as (p: VectorClock) => VectorClock)(prev) : value
-        vectorClockPageRef.current = next
-        return next
-      })
+      const next = typeof value === "function" ? (value as Function)(vectorClockPageRef.current) : value
+      vectorClockPageRef.current = next
+      setVectorClock(next)
     },
     []
   )
