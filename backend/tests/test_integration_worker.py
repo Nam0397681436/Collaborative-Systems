@@ -8,7 +8,7 @@ from infra.redis.redis_client import RedisClient
 from infra.mongodb.repository.operation_repo import OperationRepository
 from app.worker.consumer import OTWorker
 
-TEST_DOC_ID = "integration_test_doc_123"
+TEST_DOC_ID = "64e1c2b5d0b4b21b0f0b4aaa"
 
 # User IDs for deterministic tie-breaking
 U_A = "6a05988a9a93bafee2a2e5c7" # Smallest
@@ -54,13 +54,24 @@ async def test_full_worker_flow():
     producer = RabbitMQProducer()
     worker = OTWorker(producer)
     
+    # Seed MongoDB with TEST_DOC_ID
+    from infra.mongodb.database import get_db
+    db = get_db()
+    from bson import ObjectId
+    await db["documents"].update_one(
+        {"_id": ObjectId(TEST_DOC_ID)},
+        {"$set": {"epoch": 0, "content_snapshot": "", "global_v_clock": {}}},
+        upsert=True
+    )
+    
     # Lấy channel và bind queue (giống hệt cách main() làm)
     channel = get_consumer_channel()
     exchange = await channel.declare_exchange("ot_exchange", type="direct", durable=True)
     
-    # Ép dùng queue_0 để test dễ dàng
-    routing_key = get_routing_key(TEST_DOC_ID, num_queue=1)
-    queue = await channel.declare_queue(routing_key, durable=True)
+    # Ép dùng queue test độc lập để tránh đụng độ với worker thật đang chạy ngầm
+    import uuid
+    routing_key = f"test_edit_queue_{uuid.uuid4().hex}"
+    queue = await channel.declare_queue(routing_key, durable=True, auto_delete=True)
     await queue.bind(exchange, routing_key=routing_key)
     
     # Dọn dẹp hàng đợi đề phòng còn tin nhắn rác
