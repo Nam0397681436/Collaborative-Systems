@@ -22,6 +22,7 @@ export interface DocumentItem {
   content_snapshot?: string
   created_at?: string
   updated_at?: string
+  epoch?: number
 }
 
 export interface DocumentApiResponse {
@@ -88,5 +89,23 @@ export async function updateCollaboratorRoleApi(docId: string, collaboratorId: s
   const body: any = { role }
   if (requesterId) body.requesterId = requesterId
   const res = await apiClient.put<DocumentApiResponse>(`/documents/${encodeURIComponent(docId)}/collaborators/${encodeURIComponent(collaboratorId)}/role`, body)
+  return res.data
+}
+
+// ── Lấy danh sách checkpoints của document ──────────────────────────────────────
+export async function getDocumentVersionsApi(docId: string): Promise<any> {
+  const res = await apiClient.get<any>(`/documents/${encodeURIComponent(docId)}/versions`)
+  return res.data
+}
+
+// ── Phục dựng nội dung phiên bản cụ thể ─────────────────────────────────────────
+export async function getDocumentVersionPreviewApi(docId: string, versionNumber: number): Promise<any> {
+  const res = await apiClient.get<any>(`/documents/${encodeURIComponent(docId)}/versions/${versionNumber}`)
+  return res.data
+}
+
+// ── Khôi phục về phiên bản cũ ──────────────────────────────────────────────────
+export async function revertDocumentToVersionApi(docId: string, versionNumber: number, requesterId: string): Promise<any> {
+  const res = await apiClient.post<any>(`/documents/${encodeURIComponent(docId)}/versions/${versionNumber}/revert?requesterId=${encodeURIComponent(requesterId)}`)
   return res.data
 }

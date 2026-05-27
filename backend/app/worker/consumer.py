@@ -3,8 +3,12 @@ import asyncio
 import json
 import logging
 from pydantic import TypeAdapter
+from dotenv import load_dotenv
 
-from infra.mongodb.database import connect_to_mongodb, close_mongodb_connection
+load_dotenv()
+
+from infra.mongodb.database import connect_to_mongodb, close_mongodb_connection, get_db
+from bson import ObjectId
 from infra.rabbitmq.rabbit_mq_gateway import (
     RabbitMQProducer,
     connect_to_rabbitmq,
@@ -41,9 +45,6 @@ class OTWorker:
                 client_v_clock = payload.get("v_clock", {})
                 text = await get_snapshot_text(doc_id)
                 if text is None:
-                    from infra.mongodb.database import get_db
-                    from bson import ObjectId
-
                     db = get_db()
                     if db is not None:
                         doc = await db["documents"].find_one({"_id": ObjectId(doc_id)})
@@ -78,12 +79,43 @@ class OTWorker:
             user_id = payload.get("user_id")
             op_data = payload.get("op", {})
             client_v_clock = payload.get("v_clock", {})
+            client_epoch = payload.get("epoch", 0)
+
+            # Epoch Versioning Validation
+            db = get_db()
+            doc = await db["documents"].find_one({"_id": ObjectId(doc_id)})
+            if not doc:
+                logger.error(f"Document not found: {doc_id}")
+                return
+
+            server_epoch = doc.get("epoch", 0)
+            if client_epoch < server_epoch:
+                logger.warning(
+                    f"Outdated epoch rejected. doc_id: {doc_id}, user_id: {user_id}, client_epoch: {client_epoch}, server_epoch: {server_epoch}"
+                )
+                # Phát broadcast REVERT về để ép các client đồng bộ lại
+                revert_payload = {
+                    "type": "REVERT",
+                    "doc_id": doc_id,
+                    "v_clock": {str(k): int(v) for k, v in doc.get("global_v_clock", {}).items()},
+                    "epoch": server_epoch,
+                    "content": doc.get("content_snapshot", "")
+                }
+                await self.producer.publish(
+                    message=json.dumps(revert_payload),
+                    exchange="broadcast_to_room",
+                    routing_key="",
+                    exchange_type="fanout",
+                    durable=False,
+                )
+                return
 
             # 1. Parse Data Model (Pydantic Discriminator tự ép kiểu)
             op_data["op_type"] = op_data.get("type", "retain")
             op_data["user_id"] = user_id
             op_data["doc_id"] = doc_id
             op_data["v_clock"] = client_v_clock
+            op_data["epoch"] = client_epoch
 
             try:
                 op = TypeAdapter(OpPayload).validate_python(op_data)
@@ -92,7 +124,7 @@ class OTWorker:
                 return
 
             # 2. Causality Check & Transform
-            history_ops_data = await OperationRepository.get_recent_history(doc_id)
+            history_ops_data = await OperationRepository.get_recent_history(doc_id, server_epoch)
             history_ops_data.reverse()
 
             history_ops_ascending = []
@@ -122,7 +154,7 @@ class OTWorker:
 
             # 3. Save to DB (Atomic) and Cache
             await OperationRepository.save_transaction_and_update_clock(
-                ops_new, doc_id, user_id, client_v_clock
+                ops_new, doc_id, user_id, client_v_clock, client_epoch
             )
 
             # 4. Broadcast via RabbitMQ Fanout

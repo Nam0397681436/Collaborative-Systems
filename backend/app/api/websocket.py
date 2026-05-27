@@ -1,13 +1,18 @@
 import json
+import logging
+import os
+
+from bson import ObjectId
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+
 from model.connection_socket import connection_manager
 from infra.rabbitmq.rabbit_mq_gateway import RabbitMQProducer, get_routing_key
 from infra.redis.redis_client import RedisClient
 from infra.mongodb.database import get_db
-from bson import ObjectId
-import logging
 
 logger = logging.getLogger("app.websocket")
+
+num_queues = int(os.getenv("RABBITMQ_NUM_QUEUES", "1"))
 
 router = APIRouter()
 
@@ -70,7 +75,7 @@ async def websocket_endpoint(websocket: WebSocket, doc_id: str, user_id: str):
                         }
                     ),
                     exchange="ot_exchange",
-                    routing_key=get_routing_key(doc_id, num_queue=1),
+                    routing_key=get_routing_key(doc_id, num_queue=num_queues),
                 )
 
             elif msg_type == "CURSOR":
@@ -101,11 +106,12 @@ async def websocket_endpoint(websocket: WebSocket, doc_id: str, user_id: str):
                     ),  # Ví dụ: {type: 'insert', char: 'A', index: 10}
                     "version": data.get("version", None),
                     "v_clock": data.get("v_clock", None),
+                    "epoch": data.get("epoch", 0),
                 }
 
                 # push len RabbitMq
                 logger.info("payload: %s", payload)
-                routing_key = get_routing_key(doc_id, num_queue=1)
+                routing_key = get_routing_key(doc_id, num_queue=num_queues)
                 await RabbitMQProducer().publish(
                     message=json.dumps(payload),
                     exchange="ot_exchange",
@@ -120,13 +126,25 @@ async def websocket_endpoint(websocket: WebSocket, doc_id: str, user_id: str):
         logger.info(f"User {user_id} disconnected")
     finally:
         await connection_manager.disconnect(websocket, doc_id, user_id)
+
+        # kiểm tra xem còn ai trong phòng không
+        remaining_users = connection_manager.get_online_users(doc_id)
+        if not remaining_users:
+            # nếu không còn ai trong phòng thì lưu nội dung vào mongodb
+            logger.info(f"Room {doc_id} is empty. Triggering save to MongoDB...")
+            from app.core.snapshot_text import save_snapshot_text, get_snapshot_text
+
+            # lấy nội dung trên redis rồi lưu vào mongodb
+            text = await get_snapshot_text(doc_id)
+            await save_snapshot_text(doc_id, text)
+
         await connection_manager.broadcast_to_room(
             doc_id,
             {
                 "type": "LEAVE",
                 "doc_id": doc_id,
                 "user_id": user_id,
-                "online_users": connection_manager.get_online_users(doc_id),
+                "online_users": remaining_users,
             },
         )
 

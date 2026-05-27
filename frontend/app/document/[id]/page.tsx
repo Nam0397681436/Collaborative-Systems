@@ -13,6 +13,9 @@ import {
   type Collaborator,
   type DocumentRole,
   type VectorClock,
+  getDocumentVersionsApi,
+  getDocumentVersionPreviewApi,
+  revertDocumentToVersionApi,
 } from "@/lib/api/documents"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -94,6 +97,16 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
   const [userRole, setUserRole] = useState<string | null>(null)
   const [remoteCursors, setRemoteCursors] = useState<Cursor[]>([])
 
+  const [epoch, setEpoch] = useState<number>(0)
+  const epochRef = useRef<number>(0)
+  const handleRevertRef = useRef<(content: string) => void>(() => { })
+
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false)
+  const [versions, setVersions] = useState<any[]>([])
+  const [isLoadingVersions, setIsLoadingVersions] = useState(false)
+  const [selectedVersion, setSelectedVersion] = useState<number | null>(null)
+  const [previewContent, setPreviewContent] = useState<string>("")
+
   const titleDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const socketRef = useRef<WebSocket | null>(null)
   // Ref luôn giữ giá trị vectorClock mới nhất, cập nhật đồng bộ (không chờ React re-render)
@@ -117,6 +130,10 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
         setVectorClock(fetchedClock)
         setInitialContent(res.document.content_snapshot ?? "")
         setCurrentClock(res.document.global_v_clock ? res.document.global_v_clock[user.id] || 0 : 0)
+
+        const fetchedEpoch = res.document.epoch ?? 0
+        epochRef.current = fetchedEpoch
+        setEpoch(fetchedEpoch)
       }
     } catch (err) {
       toast.error("Không tìm thấy tài liệu hoặc bạn không có quyền truy cập")
@@ -185,6 +202,8 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
           color?: string
           new_title?: string
           text?: string
+          epoch?: number
+          content?: string
         }
 
         if (!message.type) return
@@ -195,6 +214,31 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
           if (message.new_title) {
             setTitle(message.new_title)
             // toast.info("Tiêu đề đã được cập nhật")
+          }
+        }
+
+        if (message.type === "REVERT") {
+          const { doc_id, v_clock, epoch: newEpoch, content } = message as { doc_id?: string; v_clock?: VectorClock; epoch?: number; content?: string }
+          if (content !== undefined) {
+            // Cập nhật epoch cục bộ
+            const nextEpoch = newEpoch ?? 0
+            epochRef.current = nextEpoch
+            setEpoch(nextEpoch)
+
+            // Cập nhật Vector Clock cục bộ
+            const newVClock = v_clock ?? {}
+            vectorClockPageRef.current = newVClock
+            setVectorClock(newVClock)
+
+            const nextClock = newVClock[user.id] ?? 0
+            setCurrentClock(nextClock)
+
+            // Thực hiện revert editor
+            handleRevertRef.current?.(content)
+            setInitialContent(content)
+            setSelectedVersion(null)
+            setIsHistoryOpen(false)
+            toast.info("Tài liệu đã được khôi phục về phiên bản lịch sử!")
           }
         }
 
@@ -299,36 +343,6 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
             setCurrentClock(nextClock)
           }
 
-          // Khi text thay đổi độ dài (insert/delete), transform index của tất cả
-          // remote cursors để giữ vị trí đúng:
-          //   - insert tại p  → index >= p thì tăng lên
-          //   - delete tại p  → index nằm trong vùng xóa thì kẹp về p (clamp)
-          //                  → index sau vùng xóa thì giảm xuống
-          // Không adjust cursor của chính người vừa edit (họ sẽ tự gửi CURSOR update)
-          const editorUserId = message.user_id
-          setRemoteCursors((cursors) =>
-            cursors.map((cursor) => {
-              if (cursor.user_id === editorUserId) return cursor
-              let index = cursor.index
-              for (const op of editOps) {
-                const opLen = op.char.length
-                if (op.type === "insert") {
-                  if (op.index <= index) index += opLen
-                } else if (op.type === "delete") {
-                  const opEnd = op.index + opLen
-                  if (opEnd <= index) {
-                    // cursor nằm sau vùng xóa → dịch trái
-                    index -= opLen
-                  } else if (op.index < index) {
-                    // cursor nằm trong vùng bị xóa → kẹp về đầu vùng xóa
-                    index = op.index
-                  }
-                }
-              }
-              return { ...cursor, index: Math.max(0, index) }
-            })
-          )
-
           try {
             handleRemoteEditRef.current?.(editOps, message.user_id)
           } catch (handlerErr) {
@@ -424,6 +438,69 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
     },
     []
   )
+
+  // ── Quản lý Lịch sử phiên bản (Version History) ──────────────────────────
+  const handleOpenHistory = async () => {
+    setIsHistoryOpen(true)
+    setIsLoadingVersions(true)
+    setSelectedVersion(null)
+    try {
+      const res = await getDocumentVersionsApi(id)
+      if (res.success && res.versions) {
+        setVersions(res.versions)
+      }
+    } catch (err) {
+      toast.error("Lỗi khi tải danh sách phiên bản lịch sử")
+      console.error(err)
+    } finally {
+      setIsLoadingVersions(false)
+    }
+  }
+
+  const handleCloseHistory = () => {
+    setIsHistoryOpen(false)
+    setSelectedVersion(null)
+  }
+
+  const handlePreviewVersion = async (versionNumber: number) => {
+    toast.loading("Đang phục dựng phiên bản...", { id: "preview-loading" })
+    try {
+      const res = await getDocumentVersionPreviewApi(id, versionNumber)
+      if (res.success && res.content !== undefined) {
+        setPreviewContent(res.content)
+        setSelectedVersion(versionNumber)
+        toast.dismiss("preview-loading")
+      }
+    } catch (err) {
+      toast.dismiss("preview-loading")
+      toast.error("Lỗi khi phục dựng nội dung lịch sử")
+      console.error(err)
+    }
+  }
+
+  const handleExitPreview = () => {
+    setSelectedVersion(null)
+  }
+
+  const handleRevert = async () => {
+    if (selectedVersion === null || !user?.id) return
+    if (userRole === "viewer" || userRole === "commenter") {
+      toast.error("Bạn không có quyền khôi phục phiên bản lịch sử")
+      return
+    }
+    if (!window.confirm(`Bạn có chắc chắn muốn khôi phục tài liệu về Phiên bản ${selectedVersion}?`)) return
+    toast.loading("Đang tiến hành khôi phục...", { id: "revert-loading" })
+    try {
+      const res = await revertDocumentToVersionApi(id, selectedVersion, user.id)
+      if (res.success) {
+        toast.dismiss("revert-loading")
+      }
+    } catch (err) {
+      toast.dismiss("revert-loading")
+      toast.error("Lỗi khi gửi yêu cầu khôi phục")
+      console.error(err)
+    }
+  }
 
   const isOwner = Boolean(user && document && user.id === document.ownerId)
 
@@ -586,7 +663,7 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem>
+                <DropdownMenuItem className="cursor-pointer" onClick={handleOpenHistory}>
                   <History className="w-4 h-4 mr-2" />
                   Lịch sử phiên bản
                 </DropdownMenuItem>
@@ -640,21 +717,99 @@ export default function DocumentEditorPage({ params }: { params: Promise<{ id: s
       </header>
 
       {/* Main Content */}
-      <div className="">
+      <div className={`flex flex-row flex-1 ${isHistoryOpen ? 'w-[calc(100%-20rem)]' : 'w-full'} overflow-hidden relative`} style={{ height: "calc(100vh - 60px)" }}>
         {/* Editor */}
-        <div className={`w-full overflow-auto p-2`}>
+        <div className="flex-1 overflow-auto p-2 flex flex-col">
+          {selectedVersion !== null && (
+            <div className="bg-amber-100 border border-amber-300 text-amber-800 px-4 py-2 rounded-lg flex items-center justify-between mx-4 my-2">
+              <span className="text-sm font-medium">
+                Bạn đang xem bản nháp lịch sử Phiên bản {selectedVersion} (Chỉ xem)
+              </span>
+              <div className="flex gap-2">
+                {userRole && userRole !== "viewer" && (
+                  <Button size="sm" onClick={handleRevert}>
+                    Khôi phục phiên bản này
+                  </Button>
+                )}
+                <Button size="sm" variant="outline" onClick={handleExitPreview}>
+                  Thoát xem trước
+                </Button>
+              </div>
+            </div>
+          )}
           <DocumentContentEditor
             remoteCursors={remoteCursors}
-            editable={userRole ? userRole !== "viewer" : false}
-            initialContent={initialContent}
+            editable={selectedVersion !== null ? false : (userRole ? userRole !== "viewer" : false)}
+            initialContent={selectedVersion !== null ? previewContent : initialContent}
             socket={socketRef.current}
             currentClock={currentClock}
             setCurrentClock={setCurrentClock}
             vectorClock={vectorClock}
             setVectorClock={handleSetVectorClock}
             handleRemoteEditRef={handleRemoteEditRef}
+            epoch={epoch}
+            handleRevertRef={handleRevertRef}
           />
         </div>
+
+        {/* Sidebar Lịch sử */}
+        {isHistoryOpen && (
+          <div className="w-80 top-[60px] right-0 fixed border-l border-border bg-white p-4 flex flex-col min-h-[calc(100vh-60px)] max-h-[calc(100vh-60px)] overflow-y-auto shadow-lg z-20">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                <History className="w-5 h-5 text-primary" />
+                Lịch sử phiên bản
+              </h3>
+              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={handleCloseHistory}>
+                <span className="text-xl">&times;</span>
+              </Button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-2">
+              {isLoadingVersions ? (
+                <div className="text-center py-8 text-gray-500 text-sm">Đang tải lịch sử...</div>
+              ) : versions.length === 0 ? (
+                <div className="text-center py-8 text-gray-500 text-sm">Chưa có phiên bản lịch sử nào</div>
+              ) : (
+                versions.map((ver) => {
+                  // Lấy danh sách tên người chỉnh sửa
+                  const editorNames = ver.contributors && ver.contributors.length > 0
+                    ? ver.contributors.map((userId: string) => {
+                      const c = collaborators.find(col => col._id === userId);
+                      return c ? (c.username || c.email || "Unknown") : "Unknown";
+                    }).join(", ")
+                    : "Hệ thống";
+
+                  return (
+                    <div
+                      key={ver.version_number}
+                      onClick={() => handlePreviewVersion(ver.version_number)}
+                      className={`p-3 rounded-lg border cursor-pointer transition-all ${selectedVersion === ver.version_number
+                        ? "border-primary bg-primary/5 shadow-sm"
+                        : "border-gray-200 hover:bg-gray-50"
+                        }`}
+                    >
+                      <div className="flex justify-between items-center mb-1">
+                        <span className="text-sm font-semibold text-gray-700">
+                          Phiên bản {ver.version_number}
+                        </span>
+                        <span className="text-xs text-gray-400">
+                          {new Date(ver.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </span>
+                      </div>
+                      <div className="text-xs text-gray-500">
+                        {new Date(ver.created_at).toLocaleDateString()}
+                      </div>
+                      <div className="text-[10px] text-gray-400 mt-1 italic">
+                        Bởi: <span className="font-medium text-gray-600">{editorNames}</span> | Epoch: {ver.epoch}
+                      </div>
+                    </div>
+                  )
+                })
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )
